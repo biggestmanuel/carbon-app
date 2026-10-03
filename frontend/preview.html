@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Carbon App — UI preview</title>
+<title>Carbon App — Dashboard preview</title>
 <style>
   :root{--bg:#0f1216;--panel:#181c22;--border:#2a3038;--text:#e6e9ee;--muted:#9aa4b2;--accent:#4ade80;--danger:#f87171;--info:#60a5fa;color-scheme:dark}
   *{box-sizing:border-box}
@@ -11,8 +11,6 @@
   h1{margin:0 0 .25rem;font-size:1.6rem}
   h2{margin:0 0 .75rem;font-size:1.1rem}
   .hint{color:var(--muted);margin:0 0 1rem;font-size:.875rem}
-  .info{color:var(--info)}
-  .error{color:var(--danger)}
   .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;margin-bottom:1rem;padding:1.25rem}
   .columns{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));align-items:start;gap:1rem;display:grid}
   .grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.75rem;margin-bottom:1rem;display:grid}
@@ -20,6 +18,7 @@
   .field small{color:var(--muted);font-size:.75rem}
   select{border:1px solid var(--border);color:var(--text);font:inherit;background:#10141a;border-radius:6px;width:100%;padding:.5rem .6rem}
   label{color:var(--muted);font-size:.85rem}
+  form.card label{margin:.6rem 0 .2rem;display:block}
   input{border:1px solid var(--border);color:var(--text);font:inherit;background:#10141a;border-radius:6px;width:100%;padding:.5rem .6rem}
   button{background:var(--accent);color:#06210f;cursor:pointer;font:inherit;border:none;border-radius:6px;margin-top:1rem;padding:.55rem 1rem;font-weight:600}
   button.secondary{border:1px solid var(--border);color:var(--text);background:transparent;margin-top:0}
@@ -31,23 +30,30 @@
   .big{font-size:2rem;font-weight:700;color:var(--accent);margin:.25rem 0}
   .breakdown{list-style:none;padding:0;margin:.5rem 0 0;color:var(--muted);font-size:.875rem}
   .breakdown li{padding:.1rem 0}
-  table{width:100%;border-collapse:collapse;font-size:.85rem}
-  th,td{text-align:right;padding:.4rem .5rem;border-bottom:1px solid var(--border)}
-  th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
-  th{color:var(--muted);font-weight:600}
+  .unit{font-weight:400;opacity:.7}
   .banner{max-width:1080px;margin:0 auto;padding:1rem 1.25rem 0}
   .banner p{background:#1a1418;border:1px solid #4a2530;border-radius:8px;color:var(--muted);
             padding:.6rem .9rem;margin:0;font-size:.8rem}
-  .tag{display:inline-block;background:#1f2937;color:var(--muted);border-radius:4px;
-       padding:.1rem .4rem;font-size:.7rem;margin-left:.4rem;vertical-align:middle}
+
+  /* The fix: History is full width and its table lives in a scroll wrapper, so
+     it can never paint outside the card. */
+  .table-scroll{overflow-x:auto;margin:0 -.25rem;padding:0 .25rem}
+  table{width:100%;border-collapse:collapse;font-size:.85rem}
+  th,td{text-align:right;padding:.4rem;border-bottom:1px solid var(--border);white-space:nowrap}
+  th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+  th{color:var(--muted);font-weight:600}
+  td.date{font-variant-numeric:tabular-nums}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+           clip:rect(0,0,0,0);white-space:nowrap;border:0}
 </style>
 </head>
 <body>
 
 <div class="banner">
-  <p>Static capture of the live app at <code>localhost:5173</code> with real data from the
-  running backend. React is not executing here, so this is a rendered snapshot rather than an
-  interactive page. Use the running dev server for the interactive version.</p>
+  <p>Static capture of the live app at <code>localhost:5173</code> with real backend data.
+  React is not executing here, so this is a rendered snapshot. The History table now spans the
+  full width and sits in a horizontal scroll wrapper, which is what stops it spilling past
+  the card border.</p>
 </div>
 
 <main class="app">
@@ -59,85 +65,96 @@
     </header>
 
     <div class="columns">
-      <div>
-        <form class="card">
-          <h2>Log your footprint</h2>
-          <p class="hint">Leave a field blank to count it as zero.</p>
+      <form class="card">
+        <h2>Log your footprint</h2>
+        <p class="hint">Leave a field blank to count it as zero.</p>
 
-          <div class="grid">
-            <div class="field">
-              <label>Your grid region</label>
-              <select><option>France</option></select>
-              <small>Electricity emissions depend on how dirty the local grid is.</small>
-            </div>
-            <div class="field">
-              <label>Drove somewhere else?</label>
-              <select><option>Same as home</option></select>
-              <small>Only affects driving, which burns fuel rather than grid power.</small>
-            </div>
+        <div class="grid">
+          <div class="field">
+            <label>Your grid region</label>
+            <select><option>France</option></select>
+            <small>Electricity emissions depend on how dirty the local grid is.</small>
           </div>
-
-          <div class="grid">
-            <div class="field">
-              <label>Car km (km)</label>
-              <input type="number" placeholder="0" value="">
-              <small>0.21 kg CO₂e per km</small>
-            </div>
-            <div class="field">
-              <label>Electricity (kWh)</label>
-              <input type="number" placeholder="0" value="">
-              <small>0.056 kg CO₂e per kWh</small>
-            </div>
-            <div class="field">
-              <label>Meat meals (meals)</label>
-              <input type="number" placeholder="0" value="">
-              <small>5 kg CO₂e per meal</small>
-            </div>
-            <div class="field">
-              <label>Plant meals (meals)</label>
-              <input type="number" placeholder="0" value="">
-              <small>2 kg CO₂e per meal</small>
-            </div>
+          <div class="field">
+            <label>Drove somewhere else?</label>
+            <select><option>Same as home</option></select>
+            <small>Only affects driving, which burns fuel rather than grid power.</small>
           </div>
-
-          <button type="submit">Calculate</button>
-
-          <div class="result">
-            <strong>64.76 kg CO₂e</strong>
-            <ul class="breakdown">
-              <li>Car km: 29.4 kg</li>
-              <li>Electricity: 3.36 kg</li>
-              <li>Meat meals: 10 kg</li>
-              <li>Plant meals: 22 kg</li>
-            </ul>
-          </div>
-        </form>
-
-        <div class="card">
-          <h2>History</h2>
-          <p class="hint">Showing 2 of 2</p>
-          <table>
-            <thead>
-              <tr><th>Date</th><th>Region</th><th>Car km</th><th>kWh</th><th>Meat</th><th>Plant</th><th>Total kg CO₂e</th></tr>
-            </thead>
-            <tbody>
-              <tr><td>03/10/2026, 09:36</td><td>fr</td><td>140</td><td>60</td><td>2</td><td>11</td><td><strong>64.76</strong></td></tr>
-              <tr><td>03/10/2026, 09:36</td><td>gb</td><td>320</td><td>95</td><td>6</td><td>9</td><td><strong>134.865</strong></td></tr>
-            </tbody>
-          </table>
         </div>
-      </div>
+
+        <div class="grid">
+          <div class="field">
+            <label>Car km (km)</label>
+            <input type="number" placeholder="0" value="">
+            <small>0.21 kg CO₂e per km</small>
+          </div>
+          <div class="field">
+            <label>Electricity (kWh)</label>
+            <input type="number" placeholder="0" value="">
+            <small>0.056 kg CO₂e per kWh</small>
+          </div>
+          <div class="field">
+            <label>Meat meals (meals)</label>
+            <input type="number" placeholder="0" value="">
+            <small>5 kg CO₂e per meal</small>
+          </div>
+          <div class="field">
+            <label>Plant meals (meals)</label>
+            <input type="number" placeholder="0" value="">
+            <small>2 kg CO₂e per meal</small>
+          </div>
+        </div>
+
+        <button type="submit">Calculate</button>
+
+        <div class="result">
+          <strong>64.76 kg CO₂e</strong>
+          <ul class="breakdown">
+            <li>Car km: 29.4 kg</li>
+            <li>Electricity: 3.36 kg</li>
+            <li>Meat meals: 10 kg</li>
+            <li>Plant meals: 22 kg</li>
+          </ul>
+        </div>
+      </form>
 
       <div class="card">
         <h2>Lifetime total</h2>
-        <p class="big">199.625 kg CO₂e</p>
-        <p class="hint">2 entries · average 99.8125 kg per entry</p>
+        <p class="big">399.25 kg CO₂e</p>
+        <p class="hint">4 entries · average 99.81 kg per entry</p>
         <ul class="breakdown">
-          <li>Car travel: 96.6 kg</li>
-          <li>Electricity: 23.025 kg</li>
-          <li>Meat meals: 40 kg</li>
-          <li>Plant meals: 40 kg</li>
+          <li>Car travel: 180 kg</li>
+          <li>Electricity: 42.14 kg</li>
+          <li>Meat meals: 80 kg</li>
+          <li>Plant meals: 60 kg</li>
         </ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>History</h2>
+      <p class="hint">Showing 4 of 4</p>
+      <div class="table-scroll">
+        <table>
+          <caption class="sr-only">Saved footprint entries, newest first</caption>
+          <thead>
+            <tr>
+              <th scope="col">Date</th>
+              <th scope="col">Region</th>
+              <th scope="col">Car km</th>
+              <th scope="col">kWh</th>
+              <th scope="col">Meat</th>
+              <th scope="col">Plant</th>
+              <th scope="col">Total<span class="unit"> kg CO₂e</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td class="date">03 Oct 26, 10:35</td><td title="gb">UK</td><td>320</td><td>95</td><td>6</td><td>9</td><td><strong>134.87</strong></td></tr>
+            <tr><td class="date">03 Oct 26, 10:35</td><td title="fr">France</td><td>140</td><td>60</td><td>2</td><td>11</td><td><strong>64.76</strong></td></tr>
+            <tr><td class="date">03 Oct 26, 09:36</td><td title="fr">France</td><td>140</td><td>60</td><td>2</td><td>11</td><td><strong>64.76</strong></td></tr>
+            <tr><td class="date">03 Oct 26, 09:36</td><td title="gb">UK</td><td>320</td><td>95</td><td>6</td><td>9</td><td><strong>134.87</strong></td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </div>

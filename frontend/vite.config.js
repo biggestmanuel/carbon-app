@@ -17,6 +17,10 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.js"],
     include: ["src/**/*.test.{js,jsx}"],
     exclude: ["node_modules/**", "dist/**"],
+    // Process CSS so layout assertions can read real computed styles. Without
+    // this jsdom returns defaults and every getComputedStyle check passes
+    // vacuously.
+    css: true,
     // The fork pool ran this suite out of memory on Windows (worker exit 134).
     // A single thread keeps the footprint flat.
     pool: "threads",

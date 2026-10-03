@@ -17,13 +17,16 @@ function Dashboard({ username, onLogout }) {
         </button>
       </header>
 
+      {/* Capture and totals sit side by side. */}
       <div className="columns">
-        <div>
-          <FootprintForm onSaved={() => setRefreshKey((n) => n + 1)} />
-          <HistoryList refreshKey={refreshKey} />
-        </div>
+        <FootprintForm onSaved={() => setRefreshKey((n) => n + 1)} />
         <Summary refreshKey={refreshKey} />
       </div>
+
+      {/* History spans the full width. In a two-column grid it was squeezed to
+          about 470px, which is narrower than its own minimum content width, so
+          the columns spilled out of the card. */}
+      <HistoryList refreshKey={refreshKey} />
     </div>
   );
 }
