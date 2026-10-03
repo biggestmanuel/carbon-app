@@ -7,19 +7,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { apiMock, resetApiMocks } from "../test/api-mock";
+
 vi.mock("../api", async (importOriginal) => {
-  const actual = await importOriginal();
-  return { ...actual, api: { get: vi.fn(), post: vi.fn() } };
+  const actual = await importOriginal<typeof import("../api")>();
+  return { ...actual, api: apiMock };
 });
 
-import { api } from "../api";
-import ForgotPassword from "./ForgotPassword.jsx";
-import ResetPassword from "./ResetPassword.jsx";
+import ForgotPassword from "./ForgotPassword";
+import ResetPassword from "./ResetPassword";
 
 const GENERIC = "If that address exists, a reset link is on its way.";
 
 beforeEach(() => {
-  api.post.mockReset();
+  resetApiMocks();
 });
 
 afterEach(() => {
@@ -29,7 +30,7 @@ afterEach(() => {
 
 describe("ForgotPassword", () => {
   it("asks for an address and reports success generically", async () => {
-    api.post.mockResolvedValue({ data: { msg: GENERIC } });
+    apiMock.post.mockResolvedValue({ data: { msg: GENERIC } });
     const user = userEvent.setup();
 
     render(<ForgotPassword onBack={vi.fn()} />);
@@ -39,7 +40,7 @@ describe("ForgotPassword", () => {
     await waitFor(() =>
       expect(screen.getByText(/if that address has an account/i)).toBeTruthy()
     );
-    expect(api.post).toHaveBeenCalledWith("/auth/forgot-password", {
+    expect(apiMock.post).toHaveBeenCalledWith("/auth/forgot-password", {
       email: "alice@example.com",
     });
   });
@@ -47,7 +48,7 @@ describe("ForgotPassword", () => {
   it("shows the same wording whether or not the address exists", async () => {
     // A 202 for both cases is the backend's contract; this locks in the UI's
     // half of it.
-    api.post.mockResolvedValue({ data: { msg: GENERIC } });
+    apiMock.post.mockResolvedValue({ data: { msg: GENERIC } });
     const user = userEvent.setup();
 
     render(<ForgotPassword onBack={vi.fn()} />);
@@ -59,7 +60,7 @@ describe("ForgotPassword", () => {
   });
 
   it("surfaces the development token so the flow works without an inbox", async () => {
-    api.post.mockResolvedValue({ data: { msg: GENERIC, dev_token: "tok123" } });
+    apiMock.post.mockResolvedValue({ data: { msg: GENERIC, dev_token: "tok123" } });
     const user = userEvent.setup();
 
     render(<ForgotPassword onBack={vi.fn()} />);
@@ -71,7 +72,7 @@ describe("ForgotPassword", () => {
   });
 
   it("omits the development block when there is no token", async () => {
-    api.post.mockResolvedValue({ data: { msg: GENERIC } });
+    apiMock.post.mockResolvedValue({ data: { msg: GENERIC } });
     const user = userEvent.setup();
 
     render(<ForgotPassword onBack={vi.fn()} />);
@@ -89,7 +90,7 @@ describe("ForgotPassword", () => {
     await user.click(screen.getByRole("button", { name: /send reset link/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/enter your email/i);
-    expect(api.post).not.toHaveBeenCalled();
+    expect(apiMock.post).not.toHaveBeenCalled();
   });
 
   it("returns to the login form on request", async () => {
@@ -101,19 +102,27 @@ describe("ForgotPassword", () => {
 
     expect(onBack).toHaveBeenCalled();
   });
+
+  it("says the reset only works once the address is confirmed", async () => {
+    // The backend refuses an unconfirmed address, so the screen should set that
+    // expectation before the user waits for a mail that never comes.
+    render(<ForgotPassword onBack={vi.fn()} />);
+
+    expect(screen.getByText(/only once the address has been confirmed/i)).toBeTruthy();
+  });
 });
 
 describe("ResetPassword", () => {
-  function openWithToken(token) {
+  function openWithToken(token: string) {
     window.history.replaceState({}, "", `/?token=${token}`);
   }
 
   const PW = /choose password/i;
-const CONFIRM = /confirm new password/i;
+  const CONFIRM = /confirm new password/i;
 
-it("submits the token from the URL with the new password", async () => {
+  it("submits the token from the URL with the new password", async () => {
     openWithToken("abc123");
-    api.post.mockResolvedValue({ data: { msg: "Password updated." } });
+    apiMock.post.mockResolvedValue({ data: { msg: "Password updated." } });
     const user = userEvent.setup();
 
     render(<ResetPassword />);
@@ -122,7 +131,7 @@ it("submits the token from the URL with the new password", async () => {
     await user.click(screen.getByRole("button", { name: /update password/i }));
 
     await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith("/auth/reset-password", {
+      expect(apiMock.post).toHaveBeenCalledWith("/auth/reset-password", {
         token: "abc123",
         password: "brand-new-password",
       })
@@ -140,7 +149,7 @@ it("submits the token from the URL with the new password", async () => {
     await user.click(screen.getByRole("button", { name: /update password/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/do not match/i);
-    expect(api.post).not.toHaveBeenCalled();
+    expect(apiMock.post).not.toHaveBeenCalled();
   });
 
   it("enforces a minimum length", async () => {
@@ -153,7 +162,7 @@ it("submits the token from the URL with the new password", async () => {
     await user.click(screen.getByRole("button", { name: /update password/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/at least 8/i);
-    expect(api.post).not.toHaveBeenCalled();
+    expect(apiMock.post).not.toHaveBeenCalled();
   });
 
   it("refuses to submit with no token in the URL", async () => {
@@ -165,12 +174,12 @@ it("submits the token from the URL with the new password", async () => {
     await user.click(screen.getByRole("button", { name: /update password/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/invalid or has expired/i);
-    expect(api.post).not.toHaveBeenCalled();
+    expect(apiMock.post).not.toHaveBeenCalled();
   });
 
   it("shows the server's message when the link is used up", async () => {
     openWithToken("abc123");
-    api.post.mockRejectedValue({
+    apiMock.post.mockRejectedValue({
       response: { status: 400, data: { msg: "This reset link is invalid or has expired." } },
     });
     const user = userEvent.setup();

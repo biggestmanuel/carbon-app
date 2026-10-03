@@ -1,13 +1,19 @@
 import { useState } from "react";
+import type { ChangeEvent, FormEvent } from "react";
 import { api, errorMessage } from "../api";
+import type { LoginResponse } from "../types";
 
-function Login({ onAuthenticated }) {
+interface LoginProps {
+  onAuthenticated: (username: string) => void;
+}
+
+function Login({ onAuthenticated }: LoginProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (submitting) return;
     setError("");
@@ -19,9 +25,9 @@ function Login({ onAuthenticated }) {
 
     setSubmitting(true);
     try {
-      // The server sets httpOnly cookies here. Nothing is read from or written
-      // to localStorage, so there is no token for this component to store.
-      const res = await api.post("/auth/login", {
+      // The server sets httpOnly cookies here. Nothing is read from or written to
+      // localStorage, so there is no token for this component to store.
+      const res = await api.post<LoginResponse>("/auth/login", {
         username: username.trim(),
         password,
       });
@@ -42,7 +48,7 @@ function Login({ onAuthenticated }) {
         name="username"
         autoComplete="username"
         value={username}
-        onChange={(e) => setUsername(e.target.value)}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => setUsername(e.target.value)}
       />
       <label htmlFor="login-password">Password</label>
       <input
@@ -51,7 +57,7 @@ function Login({ onAuthenticated }) {
         type="password"
         autoComplete="current-password"
         value={password}
-        onChange={(e) => setPassword(e.target.value)}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
       />
       <button type="submit" disabled={submitting}>
         {submitting ? "Logging in..." : "Log in"}

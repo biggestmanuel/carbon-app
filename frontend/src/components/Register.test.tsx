@@ -1,28 +1,29 @@
 /**
- * Registration. The regression these pin: the backend accepted a
- * one-character password, so the form mirrors those rules to give an instant
- * answer instead of a round trip.
+ * Registration. The regression these pin: the backend accepted a one-character
+ * password, so the form mirrors those rules to give an instant answer instead of
+ * a round trip.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { apiMock, resetApiMocks } from "../test/api-mock";
+
 vi.mock("../api", async (importOriginal) => {
-  const actual = await importOriginal();
-  return { ...actual, api: { get: vi.fn(), post: vi.fn() } };
+  const actual = await importOriginal<typeof import("../api")>();
+  return { ...actual, api: apiMock };
 });
 
-import { api } from "../api";
-import Register from "./Register.jsx";
+import Register from "./Register";
 
 /** Fill the register form specifically, not the login one beside it. */
-function registerForm() {
-  return screen.getByRole("button", { name: /register/i }).closest("form");
+function registerForm(): HTMLFormElement {
+  return screen.getByRole("button", { name: /register/i }).closest("form") as HTMLFormElement;
 }
 
 beforeEach(() => {
-  api.post.mockReset();
-  api.post.mockResolvedValue({ data: { msg: "User registered" } });
+  resetApiMocks();
+  apiMock.post.mockResolvedValue({ data: { msg: "User registered" } });
 });
 
 describe("Register", () => {
@@ -37,7 +38,7 @@ describe("Register", () => {
     await user.click(within(form).getByRole("button", { name: /register/i }));
 
     await waitFor(() => expect(onRegistered).toHaveBeenCalledWith("alice", false));
-    expect(api.post).toHaveBeenCalledWith("/auth/register", {
+    expect(apiMock.post).toHaveBeenCalledWith("/auth/register", {
       username: "alice",
       password: "correct-horse",
     });
@@ -55,7 +56,7 @@ describe("Register", () => {
     await user.click(within(form).getByRole("button", { name: /register/i }));
 
     await waitFor(() => expect(onRegistered).toHaveBeenCalledWith("bob", true));
-    expect(api.post).toHaveBeenCalledWith("/auth/register", {
+    expect(apiMock.post).toHaveBeenCalledWith("/auth/register", {
       username: "bob",
       password: "correct-horse",
       email: "bob@example.com",
@@ -74,7 +75,7 @@ describe("Register", () => {
     // constraint validation would block submit before React ever runs. Set the
     // value directly and submit, to exercise our guard specifically.
     const email = within(form).getByLabelText(/email/i);
-    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set?.call(
       email,
       "not-an-email"
     );
@@ -83,7 +84,7 @@ describe("Register", () => {
     fireEvent.submit(form);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/valid email/i);
-    expect(api.post).not.toHaveBeenCalled();
+    expect(apiMock.post).not.toHaveBeenCalled();
   });
 
   it("omits the email field entirely when blank", async () => {
@@ -96,12 +97,12 @@ describe("Register", () => {
     await user.type(within(form).getByLabelText(/password/i), "correct-horse");
     await user.click(within(form).getByRole("button", { name: /register/i }));
 
-    await waitFor(() => expect(api.post).toHaveBeenCalled());
-    expect(api.post.mock.calls[0][1]).not.toHaveProperty("email");
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalled());
+    expect(apiMock.post.mock.calls[0]?.[1]).not.toHaveProperty("email");
   });
 
   it("surfaces an email-already-registered conflict", async () => {
-    api.post.mockRejectedValue({
+    apiMock.post.mockRejectedValue({
       response: { status: 409, data: { msg: "Email already registered" } },
     });
     const user = userEvent.setup();
@@ -126,7 +127,7 @@ describe("Register", () => {
     await user.click(within(form).getByRole("button", { name: /register/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/at least 8 characters/i);
-    expect(api.post).not.toHaveBeenCalled();
+    expect(apiMock.post).not.toHaveBeenCalled();
   });
 
   it("rejects a username under three characters", async () => {
@@ -139,7 +140,7 @@ describe("Register", () => {
     await user.click(within(form).getByRole("button", { name: /register/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/at least 3 characters/i);
-    expect(api.post).not.toHaveBeenCalled();
+    expect(apiMock.post).not.toHaveBeenCalled();
   });
 
   it("rejects usernames with unsupported characters", async () => {
@@ -152,11 +153,11 @@ describe("Register", () => {
     await user.click(within(form).getByRole("button", { name: /register/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/letters, digits, dots/i);
-    expect(api.post).not.toHaveBeenCalled();
+    expect(apiMock.post).not.toHaveBeenCalled();
   });
 
   it("surfaces a duplicate-username conflict from the server", async () => {
-    api.post.mockRejectedValue({
+    apiMock.post.mockRejectedValue({
       response: { status: 409, data: { msg: "Username already taken" } },
     });
     const user = userEvent.setup();
@@ -175,7 +176,7 @@ describe("Register", () => {
 
     render(<Register onRegistered={vi.fn()} />);
     const form = registerForm();
-    const password = within(form).getByLabelText(/password/i);
+    const password = within(form).getByLabelText(/password/i) as HTMLInputElement;
     await user.type(within(form).getByLabelText(/username/i), "alice");
     await user.type(password, "correct-horse");
     await user.click(within(form).getByRole("button", { name: /register/i }));

@@ -1,28 +1,28 @@
 import { useEffect, useState } from "react";
 import { api, errorMessage } from "../api";
+import type { FootprintEntry, HistoryResponse } from "../types";
 
 /**
- * The table has a minimum content width, so on narrow viewports it scrolls
- * horizontally inside its card rather than spilling past the border. The date
- * is formatted without seconds and with a fixed locale because that is the
- * widest cell and its width must not vary between rows.
+ * The date is formatted without seconds and with a fixed locale because it is
+ * the widest cell in the table, and its width must not vary between rows.
  */
-function formatDate(iso) {
+function formatDate(iso: string | null): string {
   if (!iso) return "-";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "-";
   // Two-digit year keeps the column narrow; this is a personal tracker where
   // entries span months, not decades.
-  return date.toLocaleString(undefined, {
+  return date.toLocaleString("en-GB", {
     day: "2-digit",
     month: "short",
     year: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    hour12: false,
   });
 }
 
-const REGION_LABELS = {
+const REGION_LABELS: Record<string, string> = {
   world: "World",
   us: "US",
   eu: "EU",
@@ -35,8 +35,12 @@ const REGION_LABELS = {
   br: "Brazil",
 };
 
-function HistoryList({ refreshKey }) {
-  const [entries, setEntries] = useState([]);
+interface HistoryListProps {
+  refreshKey: number;
+}
+
+function HistoryList({ refreshKey }: HistoryListProps) {
+  const [entries, setEntries] = useState<FootprintEntry[]>([]);
   const [totalEntries, setTotalEntries] = useState(0);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -48,7 +52,9 @@ function HistoryList({ refreshKey }) {
     // effect body: doing so triggers a cascading render on every mount.
     (async () => {
       try {
-        const res = await api.get("/footprint/history", { params: { limit: 25 } });
+        const res = await api.get<HistoryResponse>("/footprint/history", {
+          params: { limit: 25 },
+        });
         if (cancelled) return;
         // Guard the shape: a partial or unexpected payload must render an empty
         // table rather than throwing on entries.length.
@@ -58,8 +64,8 @@ function HistoryList({ refreshKey }) {
       } catch (err) {
         if (!cancelled) setError(errorMessage(err, "Could not load history."));
       } finally {
-        // Only the first load shows a spinner. A refresh keeps the previous
-        // rows visible instead of flashing an empty table.
+        // Only the first load shows a spinner. A refresh keeps the previous rows
+        // visible instead of flashing an empty table.
         if (!cancelled) setLoading(false);
       }
     })();
@@ -81,11 +87,12 @@ function HistoryList({ refreshKey }) {
       <p className="hint">
         Showing {entries.length} of {totalEntries}
       </p>
+      {/* The wrapper is what keeps the table inside the card: the table has a
+          minimum content width, so on narrow viewports this scrolls rather than
+          painting past the border. */}
       <div className="table-scroll">
         <table>
-          <caption className="sr-only">
-            Saved footprint entries, newest first
-          </caption>
+          <caption className="sr-only">Saved footprint entries, newest first</caption>
           <thead>
             <tr>
               <th scope="col">Date</th>
@@ -104,8 +111,8 @@ function HistoryList({ refreshKey }) {
             {entries.map((entry) => (
               <tr key={entry.id}>
                 <td className="date">{formatDate(entry.created_at)}</td>
-                {/* Short label to keep the column narrow; the full name is on hover. */}
-                <td title={entry.region ?? undefined}>
+                {/* Short label to keep the column narrow; the code is on hover. */}
+                <td title={entry.region || undefined}>
                   {REGION_LABELS[entry.region] ?? entry.region ?? "-"}
                 </td>
                 <td>{entry.car_km}</td>

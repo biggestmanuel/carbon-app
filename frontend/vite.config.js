@@ -14,8 +14,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    setupFiles: ["./src/test/setup.js"],
-    include: ["src/**/*.test.{js,jsx}"],
+    setupFiles: ["./src/test/setup.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
     exclude: ["node_modules/**", "dist/**"],
     // Process CSS so layout assertions can read real computed styles. Without
     // this jsdom returns defaults and every getComputedStyle check passes

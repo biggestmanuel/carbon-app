@@ -127,6 +127,24 @@ button.link {
 
 button.link:hover { color: #93c5fd; }
 
+/* Irreversible action. The distinct colour is the only warning before the
+   "type DELETE" gate, which the user can see past. */
+button.danger {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  margin-top: 0;
+}
+
+button.danger:hover:not(:disabled) { background: rgba(248, 113, 113, 0.12); }
+
+/* Separates the export half of the settings card from the deletion half. */
+hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.5rem 0;
+}
+
 .result a { color: var(--info); }
 
 header {

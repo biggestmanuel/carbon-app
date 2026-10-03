@@ -1,15 +1,26 @@
 import { useEffect, useState } from "react";
+import type { ChangeEvent, FormEvent } from "react";
 import { api, errorMessage } from "../api";
+import type { CalculateResult, FactorsCatalogue, RegionOption } from "../types";
 import { buildPayload, EMPTY_VALUES, factorsForRegion, FIELDS } from "../lib/footprint";
 
-function FootprintForm({ onSaved }) {
+interface FootprintFormProps {
+  onSaved?: (result: CalculateResult) => void;
+}
+
+/** Shown until /factors resolves, so the labels are never blank. */
+const PLACEHOLDER_REGIONS: RegionOption[] = [
+  { code: "world", label: "World average", electricity_kwh: 0.475 },
+];
+
+function FootprintForm({ onSaved }: FootprintFormProps) {
   const [values, setValues] = useState(EMPTY_VALUES);
   const [error, setError] = useState("");
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useState<CalculateResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   // Factors come from the backend so grid intensity is never hardcoded here.
-  const [catalogue, setCatalogue] = useState(null);
+  const [catalogue, setCatalogue] = useState<FactorsCatalogue | null>(null);
   const [region, setRegion] = useState("world");
   // Where the driving happened, when that differs from the home grid. Empty
   // means "same as home".
@@ -18,7 +29,7 @@ function FootprintForm({ onSaved }) {
   useEffect(() => {
     let cancelled = false;
     api
-      .get("/footprint/factors")
+      .get<FactorsCatalogue>("/footprint/factors")
       .then((res) => {
         if (cancelled) return;
         setCatalogue(res.data);
@@ -32,12 +43,14 @@ function FootprintForm({ onSaved }) {
     };
   }, []);
 
-  const handleChange = (key) => (e) => {
-    setValues((prev) => ({ ...prev, [key]: e.target.value }));
-    setError("");
-  };
+  const handleChange =
+    (key: keyof typeof EMPTY_VALUES) =>
+    (e: ChangeEvent<HTMLInputElement>) => {
+      setValues((prev) => ({ ...prev, [key]: e.target.value }));
+      setError("");
+    };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (submitting) return;
     setError("");
@@ -45,14 +58,14 @@ function FootprintForm({ onSaved }) {
 
     // Validate before sending. A blank field is zero, never NaN.
     const { payload, error: payloadError } = buildPayload(values, region, travelRegion);
-    if (payloadError) {
-      setError(payloadError);
+    if (payloadError !== undefined || payload === undefined) {
+      setError(payloadError ?? "Could not read the form.");
       return;
     }
 
     setSubmitting(true);
     try {
-      const res = await api.post("/footprint/calculate", payload);
+      const res = await api.post<CalculateResult>("/footprint/calculate", payload);
       setResult(res.data);
       setValues(EMPTY_VALUES);
       onSaved?.(res.data);
@@ -63,6 +76,7 @@ function FootprintForm({ onSaved }) {
     }
   };
 
+  // Guard the shape: a partial or unexpected payload must not throw here.
   const regions = Array.isArray(catalogue?.regions) ? catalogue.regions : [];
   const activeFactors = factorsForRegion(catalogue, region);
 
@@ -80,7 +94,7 @@ function FootprintForm({ onSaved }) {
             onChange={(e) => setRegion(e.target.value)}
             disabled={!catalogue}
           >
-            {(regions.length > 0 ? regions : [{ code: "world", label: "World average" }]).map((r) => (
+            {(regions.length > 0 ? regions : PLACEHOLDER_REGIONS).map((r) => (
               <option key={r.code} value={r.code}>
                 {r.label}
               </option>
@@ -127,7 +141,9 @@ function FootprintForm({ onSaved }) {
                 value={values[field.key]}
                 onChange={handleChange(field.key)}
               />
-              <small>{factor} kg CO₂e per {field.unit.replace(/s$/, "")}</small>
+              <small>
+                {factor} kg CO₂e per {field.unit.replace(/s$/, "")}
+              </small>
             </div>
           );
         })}
@@ -149,14 +165,12 @@ function FootprintForm({ onSaved }) {
           <ul className="breakdown">
             {FIELDS.map((field) => (
               <li key={field.key}>
-                {field.label}: {result.breakdown?.[field.breakdownKey] ?? 0} kg
+                {field.label}: {result.breakdown[field.breakdownKey] ?? 0} kg
               </li>
             ))}
           </ul>
           {result.travel_region && result.travel_region !== result.region && (
-            <p className="hint">
-              Driving scored using the {result.travel_region} fuel mix.
-            </p>
+            <p className="hint">Driving scored using the {result.travel_region} fuel mix.</p>
           )}
           {catalogue && result.factors_version !== catalogue.factors_version && (
             <p className="hint">

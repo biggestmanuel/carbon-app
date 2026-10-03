@@ -1,7 +1,14 @@
-import axios from "axios";
+import axios, { AxiosError } from "axios";
+import type { AxiosInstance, InternalAxiosRequestConfig } from "axios";
 import { API_BASE_URL } from "./config";
+import type { ApiErrorBody, MeResponse } from "./types";
 
-export const api = axios.create({
+/** Marks a request the session-expiry handler should ignore. */
+interface FlaggedConfig extends InternalAxiosRequestConfig {
+  skipSessionExpiry?: boolean;
+}
+
+export const api: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
   headers: { "Content-Type": "application/json" },
   // The access and refresh tokens live in httpOnly cookies, so the browser
@@ -12,12 +19,14 @@ export const api = axios.create({
 
 // Lets App.jsx react to a session that expired mid-visit. Without this the UI
 // used to sit on the dashboard firing doomed requests until a manual reload.
-let onSessionExpired = () => {};
-export function setSessionExpiredHandler(handler) {
-  onSessionExpired = handler || (() => {});
+let onSessionExpired: (message: string) => void = () => {};
+export function setSessionExpiredHandler(
+  handler: ((message: string) => void) | null
+): void {
+  onSessionExpired = handler ?? (() => {});
 }
 
-let refreshPromise = null;
+let refreshPromise: Promise<unknown> | null = null;
 
 /**
  * Trade the refresh cookie for a fresh access cookie.
@@ -25,11 +34,13 @@ let refreshPromise = null;
  * Concurrent 401s share one in-flight refresh so a dashboard that fires three
  * requests at once does not trigger three refresh rounds.
  */
-async function refreshAccessToken() {
+async function refreshAccessToken(): Promise<unknown> {
   if (!refreshPromise) {
-    refreshPromise = api.post("/auth/refresh", null, { skipSessionExpiry: true }).finally(() => {
-      refreshPromise = null;
-    });
+    refreshPromise = api
+      .post("/auth/refresh", null, { skipSessionExpiry: true })
+      .finally(() => {
+        refreshPromise = null;
+      });
   }
   return refreshPromise;
 }
@@ -41,19 +52,19 @@ async function refreshAccessToken() {
  * yet" answer on first load, not an expiring session. Without the flag the app
  * greets a brand-new visitor with a session-expired banner.
  */
-export async function fetchSession() {
-  const res = await api.get("/auth/me", { skipSessionExpiry: true });
+export async function fetchSession(): Promise<MeResponse> {
+  const res = await api.get<MeResponse>("/auth/me", { skipSessionExpiry: true });
   return res.data;
 }
 
 api.interceptors.response.use(
   (response) => response,
-  async (error) => {
+  async (error: AxiosError<ApiErrorBody>) => {
     const status = error.response?.status;
-    const config = error.config || {};
-    const url = config.url || "";
-    const isAuthEntry = ["/auth/login", "/auth/register", "/auth/refresh"].some((p) =>
-      url.startsWith(p)
+    const config = (error.config ?? {}) as FlaggedConfig;
+    const url = config.url ?? "";
+    const isAuthEntry = ["/auth/login", "/auth/register", "/auth/refresh"].some((path) =>
+      url.startsWith(path)
     );
 
     // 401 here means the access cookie expired but the refresh cookie may
@@ -61,12 +72,12 @@ api.interceptors.response.use(
     //
     // The retried request re-enters this interceptor. If the server keeps
     // answering 401 after a *successful* refresh (revoked session, deleted
-    // user, clock skew), an unguarded retry recurses until the tab runs out
-    // of memory. _retried marks the replay so only one attempt happens.
+    // user, clock skew), an unguarded retry recurses until the tab runs out of
+    // memory. _retried marks the replay so only one attempt happens.
     if (status === 401 && !isAuthEntry && !config._retried) {
       try {
         await refreshAccessToken();
-        return api({ ...config, _retried: true });
+        return api.request({ ...config, _retried: true } as FlaggedConfig);
       } catch {
         // Refresh failed or was rejected; fall through to a clean logout.
       }
@@ -74,25 +85,29 @@ api.interceptors.response.use(
 
     // 422 = no session cookie at all.
     if ((status === 401 || status === 422) && !isAuthEntry && !config.skipSessionExpiry) {
-      onSessionExpired(error.response?.data?.msg || "Your session has ended.");
+      onSessionExpired(error.response?.data?.msg ?? "Your session has ended.");
     }
     return Promise.reject(error);
   }
 );
 
 /** Pull a human-readable message out of an axios error. */
-export function errorMessage(error, fallback = "Something went wrong.") {
-  const status = error.response?.status;
+export function errorMessage(
+  error: unknown,
+  fallback = "Something went wrong."
+): string {
+  const axiosError = error as AxiosError<ApiErrorBody>;
+  const status = axiosError.response?.status;
   if (status === 429) {
-    return error.response.data?.msg || "Too many requests. Please wait a moment.";
+    return axiosError.response?.data?.msg ?? "Too many requests. Please wait a moment.";
   }
-  if (error.response) {
-    const data = error.response.data;
+  if (axiosError.response) {
+    const data = axiosError.response.data;
     if (typeof data === "string") return data;
-    return data?.msg || fallback;
+    return data?.msg ?? fallback;
   }
-  if (error.request) {
+  if (axiosError.request) {
     return "Cannot reach the server. Is the backend running?";
   }
-  return error.message || fallback;
+  return axiosError.message || fallback;
 }

@@ -1,21 +1,34 @@
 import { useState } from "react";
+import type { ChangeEvent, FormEvent } from "react";
 import { api, errorMessage } from "../api";
 
-// Mirrors the backend's MIN_PASSWORD_LENGTH / USERNAME_RE so the user gets
-// an instant answer instead of a round trip.
+// Mirrors the backend's MIN_PASSWORD_LENGTH / USERNAME_RE so the user gets an
+// instant answer instead of a round trip.
 const MIN_PASSWORD_LENGTH = 8;
 const USERNAME_RE = /^[A-Za-z0-9._-]+$/;
 // Deliberately loose; the backend validates and normalises.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function Register({ onRegistered }) {
+interface RegisterResponse {
+  msg: string;
+  can_reset_password: boolean;
+  email_verified: boolean;
+  verification_required: boolean;
+  dev_token?: string;
+}
+
+interface RegisterProps {
+  onRegistered: (username: string, hasEmail: boolean) => void;
+}
+
+function Register({ onRegistered }: RegisterProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const validate = () => {
+  const validate = (): string | null => {
     const name = username.trim();
     if (name.length < 3) return "Username must be at least 3 characters.";
     if (name.length > 80) return "Username must be at most 80 characters.";
@@ -28,7 +41,7 @@ function Register({ onRegistered }) {
     return null;
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (submitting) return;
     setError("");
@@ -42,7 +55,7 @@ function Register({ onRegistered }) {
     const trimmedEmail = email.trim();
     setSubmitting(true);
     try {
-      await api.post("/auth/register", {
+      await api.post<RegisterResponse>("/auth/register", {
         username: username.trim(),
         password,
         // Omitted entirely when blank: null is not the same as "not supplied".
@@ -66,7 +79,7 @@ function Register({ onRegistered }) {
         name="username"
         autoComplete="username"
         value={username}
-        onChange={(e) => setUsername(e.target.value)}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => setUsername(e.target.value)}
       />
       <label htmlFor="reg-email">Email (optional)</label>
       <input
@@ -75,10 +88,10 @@ function Register({ onRegistered }) {
         type="email"
         autoComplete="email"
         value={email}
-        onChange={(e) => setEmail(e.target.value)}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
       />
       <small className="hint">
-        Needed only if you want to reset a forgotten password.
+        Needed to confirm your address and recover a forgotten password.
       </small>
       <label htmlFor="reg-password">Password</label>
       <input
@@ -88,7 +101,7 @@ function Register({ onRegistered }) {
         autoComplete="new-password"
         minLength={MIN_PASSWORD_LENGTH}
         value={password}
-        onChange={(e) => setPassword(e.target.value)}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
       />
       <button type="submit" disabled={submitting}>
         {submitting ? "Creating..." : "Register"}

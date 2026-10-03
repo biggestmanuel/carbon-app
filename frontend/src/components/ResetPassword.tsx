@@ -1,8 +1,11 @@
 import { useState } from "react";
+import type { ChangeEvent, FormEvent } from "react";
 import { api, errorMessage } from "../api";
 
+const MIN_PASSWORD_LENGTH = 8;
+
 /**
- * Password reset, driven by ?token=... from the emailed link.
+ * Password reset, driven by the token in the URL.
  *
  * The backend deliberately returns the same message for an unknown, wrong and
  * expired token, so this screen never says which case it was.
@@ -15,9 +18,9 @@ function ResetPassword() {
   const [submitting, setSubmitting] = useState(false);
 
   // Read from the URL once, on mount.
-  const token = new URLSearchParams(window.location.search).get("token") || "";
+  const token = new URLSearchParams(window.location.search).get("token") ?? "";
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (submitting) return;
     setError("");
@@ -26,8 +29,8 @@ function ResetPassword() {
       setError("This reset link is invalid or has expired.");
       return;
     }
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters.");
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
       return;
     }
     if (password !== confirm) {
@@ -64,9 +67,9 @@ function ResetPassword() {
         id="reset-password"
         type="password"
         autoComplete="new-password"
-        minLength={8}
+        minLength={MIN_PASSWORD_LENGTH}
         value={password}
-        onChange={(e) => setPassword(e.target.value)}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
       />
 
       <label htmlFor="reset-confirm">Confirm new password</label>
@@ -75,7 +78,7 @@ function ResetPassword() {
         type="password"
         autoComplete="new-password"
         value={confirm}
-        onChange={(e) => setConfirm(e.target.value)}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => setConfirm(e.target.value)}
       />
 
       <button type="submit" disabled={submitting}>

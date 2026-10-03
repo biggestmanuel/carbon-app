@@ -7,21 +7,22 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { apiMock, resetApiMocks } from "../test/api-mock";
+
 vi.mock("../api", async (importOriginal) => {
-  const actual = await importOriginal();
-  return { ...actual, api: { post: vi.fn(), get: vi.fn() } };
+  const actual = await importOriginal<typeof import("../api")>();
+  return { ...actual, api: apiMock };
 });
 
-import { api } from "../api";
-import Login from "./Login.jsx";
+import Login from "./Login";
 
 beforeEach(() => {
-  api.post.mockReset();
+  resetApiMocks();
 });
 
 describe("Login", () => {
   it("signs in and reports the username upward", async () => {
-    api.post.mockResolvedValue({ data: { msg: "Logged in", username: "alice" } });
+    apiMock.post.mockResolvedValue({ data: { msg: "Logged in", username: "alice" } });
     const onAuthenticated = vi.fn();
     const user = userEvent.setup();
 
@@ -31,14 +32,14 @@ describe("Login", () => {
     await user.click(screen.getByRole("button", { name: /log in/i }));
 
     await waitFor(() => expect(onAuthenticated).toHaveBeenCalledWith("alice"));
-    expect(api.post).toHaveBeenCalledWith("/auth/login", {
+    expect(apiMock.post).toHaveBeenCalledWith("/auth/login", {
       username: "alice",
       password: "correct-horse",
     });
   });
 
   it("trims the username before sending", async () => {
-    api.post.mockResolvedValue({ data: { username: "alice" } });
+    apiMock.post.mockResolvedValue({ data: { username: "alice" } });
     const user = userEvent.setup();
 
     render(<Login onAuthenticated={vi.fn()} />);
@@ -46,12 +47,13 @@ describe("Login", () => {
     await user.type(screen.getByLabelText(/password/i), "correct-horse");
     await user.click(screen.getByRole("button", { name: /log in/i }));
 
-    await waitFor(() => expect(api.post).toHaveBeenCalled());
-    expect(api.post.mock.calls[0][1].username).toBe("alice");
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalled());
+    const sent = apiMock.post.mock.calls[0]?.[1] as { username: string };
+    expect(sent.username).toBe("alice");
   });
 
   it("shows a credentials error, never a session-expired banner", async () => {
-    api.post.mockRejectedValue({
+    apiMock.post.mockRejectedValue({
       response: { status: 401, data: { msg: "Bad credentials" } },
     });
     const user = userEvent.setup();
@@ -74,11 +76,11 @@ describe("Login", () => {
     await user.click(screen.getByRole("button", { name: /log in/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/enter a username and password/i);
-    expect(api.post).not.toHaveBeenCalled();
+    expect(apiMock.post).not.toHaveBeenCalled();
   });
 
   it("reports an unreachable backend", async () => {
-    api.post.mockRejectedValue({ request: {} });
+    apiMock.post.mockRejectedValue({ request: {} });
     const user = userEvent.setup();
 
     render(<Login onAuthenticated={vi.fn()} />);
@@ -90,7 +92,7 @@ describe("Login", () => {
   });
 
   it("reports a rate limit with the server's wording", async () => {
-    api.post.mockRejectedValue({
+    apiMock.post.mockRejectedValue({
       response: { status: 429, data: { msg: "Too many requests. Please slow down." } },
     });
     const user = userEvent.setup();
@@ -104,8 +106,13 @@ describe("Login", () => {
   });
 
   it("masks the password field and disables the button while submitting", async () => {
-    let release;
-    api.post.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    let release!: (value: unknown) => void;
+    apiMock.post.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        })
+    );
     const user = userEvent.setup();
 
     render(<Login onAuthenticated={vi.fn()} />);

@@ -1,28 +1,33 @@
 import { useEffect, useState } from "react";
 import { api, errorMessage } from "../api";
+import type { SummaryResponse } from "../types";
 
-const CATEGORY_LABELS = {
+const CATEGORY_LABELS: Record<string, string> = {
   car: "Car travel",
   electricity: "Electricity",
   meat: "Meat meals",
   plant: "Plant meals",
 };
 
-function Summary({ refreshKey }) {
-  const [summary, setSummary] = useState(null);
+interface SummaryProps {
+  refreshKey: number;
+}
+
+function Summary({ refreshKey }: SummaryProps) {
+  const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     api
-      .get("/footprint/summary")
+      .get<SummaryResponse>("/footprint/summary")
       .then((res) => {
         if (!cancelled) {
           setSummary(res.data);
           setError("");
         }
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         if (!cancelled) setError(errorMessage(err, "Could not load summary."));
       });
     return () => {
@@ -51,7 +56,7 @@ function Summary({ refreshKey }) {
       <ul className="breakdown">
         {Object.entries(breakdown).map(([key, value]) => (
           <li key={key}>
-            {CATEGORY_LABELS[key] || key}: {value} kg
+            {CATEGORY_LABELS[key] ?? key}: {value} kg
           </li>
         ))}
       </ul>
