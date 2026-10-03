@@ -185,13 +185,35 @@ stored region**, so mixed-region histories are reported correctly.
 
 ```bash
 cd backend
-python -m pytest tests -q
+python -m pytest tests -q        # 108 tests
+ruff check .                    # lint
+
+cd frontend
+npm test                        # 66 tests
+npm run build
 ```
 
-`tests/test_regressions.py` is the important one: each test corresponds to a bug
-that was reproduced against an earlier revision of this code, so it documents
-behaviour that must not silently regress. `test_migrations.py` drives the real
-`flask db` CLI to prove a column can be widened on a populated database.
+Backend tests live in `backend/tests/`. `test_regressions.py` is the important
+one: each test corresponds to a bug reproduced against an earlier revision of
+this code, so it documents behaviour that must not silently regress.
+`test_migrations.py` drives the real `flask db` CLI to prove a column can be
+widened on a populated database.
+
+Frontend tests use Vitest and Testing Library. `src/test/api.test.js` covers the
+credentialed request layer and the transparent refresh, which was the part
+previously verified only by hand.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request to `main`:
+
+- **Backend**: `ruff check`, `flask db check`, then pytest.
+- **Frontend**: `npm test`, then `npm run build`.
+
+`flask db check` autogenerates against a migrated database and fails if the
+models have drifted from the migration history. That catches the failure this
+project started with: a model edited without a matching revision, which only
+breaks once deployed.
 
 ## Known limitations
 
@@ -202,3 +224,7 @@ behaviour that must not silently regress. `test_migrations.py` drives the real
 - **No rate-limit-aware proxy config in dev.** The in-memory store resets on restart.
 - **Single-region-per-entry.** An entry is scored entirely with one grid factor,
   which is a simplification for people who travel or split time across grids.
+- **No frontend lint or type checking.** The suite catches behaviour, not style. Add
+  ESLint if the codebase grows.
+- **CI runs migrations but not a real deployment.** A green pipeline proves the
+  schema applies to a fresh SQLite file, not to a production database with data.
