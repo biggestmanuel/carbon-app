@@ -1,32 +1,109 @@
-from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
-from flask_jwt_extended import JWTManager
+import os
+from pathlib import Path
+
+from flask import Flask, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# Load variables from .env into the environment before Config reads them
-load_dotenv()
+from config import Config
+from extensions import db, jwt, limiter, migrate
 
-app = Flask(__name__)
-app.config.from_object("config.Config")
+BACKEND_DIR = Path(__file__).resolve().parent
 
-db = SQLAlchemy(app)
-jwt = JWTManager(app)
+# Resolve .env relative to this file instead of the process CWD, so the app
+# still finds its config when launched from the repo root.
+load_dotenv(BACKEND_DIR / ".env")
 
-# Allow the React dev server (default localhost:3000) to call this API.
-# Adjust origins for production before deploying.
-CORS(app, resources={r"/*": {"origins": ["http://localhost:3000"]}})
 
-# Import routes
-from routes.auth import auth_bp
-from routes.footprint import footprint_bp
+def create_app(config_object=Config):
+    app = Flask(__name__)
+    app.config.from_object(config_object)
+    config_object.validate()
 
-app.register_blueprint(auth_bp, url_prefix="/auth")
-app.register_blueprint(footprint_bp, url_prefix="/footprint")
+    db.init_app(app)
+    jwt.init_app(app)
+    migrate.init_app(app, db, directory=str(BACKEND_DIR / app.config["MIGRATIONS_DIR"]))
+    limiter.init_app(app)
 
-# Create tables on first run if they don't exist yet
-with app.app_context():
-    db.create_all()
+    # Credentialed CORS so the browser accepts the httpOnly auth cookie. Only
+    # safe because CORS_ORIGINS is an explicit allowlist; Config.validate()
+    # refuses to boot if it is ever set to "*".
+    CORS(
+        app,
+        resources={r"/*": {"origins": app.config["CORS_ORIGINS"]}},
+        supports_credentials=app.config["CORS_SUPPORTS_CREDENTIALS"],
+    )
+
+    _register_error_handlers(app)
+
+    from routes.auth import auth_bp
+    from routes.footprint import footprint_bp
+
+    app.register_blueprint(auth_bp, url_prefix="/auth")
+    app.register_blueprint(footprint_bp, url_prefix="/footprint")
+
+    # Dev escape hatch only. create_all() cannot alter existing tables, so the
+    # normal path is `flask db upgrade`.
+    if app.config["AUTO_CREATE_TABLES"]:
+        with app.app_context():
+            db.create_all()
+
+    return app
+
+
+def _register_error_handlers(app):
+    @app.errorhandler(404)
+    def handle_404(err):
+        return jsonify({"msg": "Not found"}), 404
+
+    @app.errorhandler(405)
+    def handle_405(err):
+        return jsonify({"msg": "Method not allowed"}), 405
+
+    @app.errorhandler(413)
+    def handle_413(err):
+        return jsonify({"msg": "Request body too large"}), 413
+
+    @app.errorhandler(500)
+    def handle_500(err):
+        # Never leak internals; the traceback stays in the server log.
+        db.session.rollback()
+        return jsonify({"msg": "Internal server error"}), 500
+
+    @app.get("/health")
+    def health():
+        return jsonify({"status": "ok"})
+
+    # flask-jwt-extended returns bare 401s by default. Normalise them so the
+    # frontend can tell an expired token from a wrong password.
+    @jwt.expired_token_loader
+    def on_expired_token(_header, _payload):
+        return jsonify({"msg": "Session expired, please log in again", "code": "token_expired"}), 401
+
+    @jwt.invalid_token_loader
+    def on_invalid_token(reason):
+        return jsonify({"msg": "Invalid token", "code": "token_invalid", "detail": str(reason)}), 401
+
+    @jwt.unauthorized_loader
+    def on_missing_token(reason):
+        return jsonify({"msg": "Authentication required", "code": "token_missing", "detail": str(reason)}), 401
+
+    # Consistent JSON for throttled requests. Werkzeug already computes
+    # Retry-After for TooManyRequests; the limiter sets the X-RateLimit-*
+    # headers itself, so this only swaps the HTML body for JSON.
+    @app.errorhandler(429)
+    def handle_429(err):
+        return jsonify({
+            "msg": "Too many requests. Please slow down and try again shortly.",
+            "code": "rate_limited",
+        }), 429
+
+
+app = create_app()
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(
+        host="127.0.0.1",
+        port=int(os.environ.get("PORT", 5000)),
+        debug=app.config["ENV"] == "development",
+    )

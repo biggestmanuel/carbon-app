@@ -1,0 +1,6 @@
+Generic single-database configuration for Flask-Migrate (Alembic).
+
+`flask db upgrade` is the only supported way to change the schema.
+`db.create_all()` can create missing tables but never alters existing ones,
+so it will not widen a column, add a NOT NULL constraint, or rename anything.
+It is disabled by default (see AUTO_CREATE_TABLES in config.py).

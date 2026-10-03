@@ -1,0 +1,22 @@
+# Normalise line endings to LF in the repository, and check them out as
+# CRLF on Windows. Without this, git warns on every Windows checkout and
+# diffs can pick up whitespace-only changes.
+* text=auto eol=lf
+
+# Windows scripts must stay CRLF or they fail to run.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets are never line-ending converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# Alembic's env.py is a template that Python must execute; keep it as-is.
+backend/migrations/env.py text eol=lf
+backend/migrations/script.py.mako text eol=lf
