@@ -1,0 +1,14 @@
+# Production-only dependencies. Installed alongside requirements.txt:
+#
+#   pip install -r requirements.txt -r requirements-prod.txt
+#
+# gunicorn is the WSGI server. Flask's built-in server is single-threaded and
+# unsuitable for serving real traffic.
+gunicorn==26.2.0
+
+# Postgres driver, needed when DATABASE_URL points at Postgres rather than SQLite.
+psycopg[binary]==3.2.9
+
+# Redis client for Flask-Limiter. Without a shared store the rate limiter
+# counts per process, so N workers means N times the intended limit.
+redis==6.4.0
