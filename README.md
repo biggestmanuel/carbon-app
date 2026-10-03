@@ -9,8 +9,9 @@ built from per-category emission factors, adjusted for their region's grid mix.
 | Layer    | Tech                                              |
 | -------- | ------------------------------------------------- |
 | Backend  | Flask 3, SQLAlchemy, Flask-JWT-Extended, Flask-Cors, Flask-Migrate, Flask-Limiter |
-| Database | SQLite by default (any SQLAlchemy URL via `DATABASE_URL`) |
-| Frontend | React 19 + Vite 8, axios                         |
+| Database | SQLite by default, Postgres in production (any SQLAlchemy URL via `DATABASE_URL`) |
+| Frontend | React 19 + Vite 8 + TypeScript (strict), axios    |
+| Serving  | gunicorn (`backend/wsgi.py`)                     |
 
 ## Layout
 
@@ -20,21 +21,25 @@ backend/
   config.py         env-driven config, validated at startup
   extensions.py     db / jwt / migrate / limiter singletons (breaks the models<->app import cycle)
   factors.py        region-aware emission factor data
-  models.py         User, Footprint
+  models.py         User, UserSession, Footprint
   routes/
     auth.py         register, login, refresh, logout, me, forgot-password, reset-password
+    account.py      email confirmation, session list/revoke, export, deletion
     footprint.py    calculate, history, summary, factors
-  passwords.py      single-use reset tokens, stored hashed
+  passwords.py      single-use tokens, generated and stored hashed
   mail.py           pluggable mailer: console in dev, SMTP in production
+  wsgi.py           production entrypoint + gunicorn settings
   migrations/       Alembic history; `flask db upgrade` owns the schema
   tests/            pytest suite
 frontend/
   src/
-    api.js          axios instance, withCredentials, transparent token refresh, 401 handling
-    lib/footprint.js  field definitions, input parsing, factor lookup (pure, unit-tested)
-    App.jsx         session state, token verification, expiry handling
-    components/     Login, Register, ForgotPassword, ResetPassword, Dashboard,
-                    FootprintForm, Summary, HistoryList
+    types.ts        every API response shape, in one place
+    api.ts          axios instance, withCredentials, transparent token refresh, 401 handling
+    lib/footprint.ts  field definitions, input parsing, factor lookup (pure, unit-tested)
+    App.tsx         session state, token verification, expiry handling, link routing
+    components/     Login, Register, ForgotPassword, ResetPassword, VerifyEmail,
+                    Dashboard, FootprintForm, Summary, HistoryList, Sessions,
+                    AccountSettings
   preview.html        static capture of the dashboard UI
   preview-auth.html   static capture of the logged-out and reset screens
 ```
@@ -95,12 +100,22 @@ ones that matter:
 | `JWT_COOKIE_SECURE`        | `true` in production   | Startup fails if off in production         |
 | `CORS_ORIGINS`             | `http://localhost:5173`| Comma-separated; `*` is rejected in prod   |
 | `LOGIN_RATE_LIMIT`         | `10 per minute`        | See "Rate limiting" below                  |
-| `RATELIMIT_STORAGE_URI`    | `memory://`            | Use Redis for multi-process deployments    |
-| `FLASK_ENV`                | `development`          | `production` enables the safety checks     |
+| `RESET_RATE_LIMIT`         | `5 per hour`           | Also covers email confirmation            |
+| `DELETE_RATE_LIMIT`        | `3 per hour`           | Deletion is irreversible                  |
+| `RATELIMIT_STORAGE_URI`    | `memory://`            | **Use Redis for multi-process deployments** |
+| `MAIL_ENABLED` / `MAIL_HOST` | off / unset          | Must agree with each other                |
+| `PUBLIC_BASE_URL`          | `http://localhost:5173` | Prefix for emailed links                 |
+| `PASSWORD_RESET_TTL_MINUTES` | `30`                 | Reset token lifetime                      |
+| `EMAIL_VERIFICATION_TTL_MINUTES` | `1440`            | Confirmation token lifetime               |
+| `RESET_REQUIRES_VERIFIED_EMAIL` | `true`           | Refuse resets to unconfirmed addresses    |
+| `PROXY_FIX_X_FOR`          | `0`                    | Number of trusted proxies; 0 = none      |
+| `SESSION_TOUCH_INTERVAL_SECONDS` | `300`             | `last_seen_at` write frequency           |
+| `FLASK_ENV`                | `development`          | `production` enables the safety checks    |
 
 `Config.validate()` refuses to start in production when the secrets are still
-placeholders, when the cookie is not Secure, when `CORS_ORIGINS` is `*`, or when
-`AUTO_CREATE_TABLES` is on. It reports every problem at once rather than the first.
+placeholders, when the cookie is not Secure, when `CORS_ORIGINS` is `*`, when
+`AUTO_CREATE_TABLES` is on, or when mail is half-configured. It reports every
+problem at once rather than the first.
 
 Frontend config is `VITE_API_URL` in `frontend/.env` (see `.env.example`).
 
@@ -117,6 +132,8 @@ payloads cannot read them. Nothing is stored in `localStorage`.
   the app logs out cleanly rather than stranding the user on a dead dashboard.
 - A password change invalidates every existing session via the `token_version`
   claim described under Password reset.
+- Each login records a `user_session` row and puts its id in the token, so
+  individual devices can be ended. See Account control below.
 - `JWT_COOKIE_CSRF_PROTECT` is off because every state-changing request is a JSON
   POST from an allowlisted origin, which a cross-site form cannot forge and a
   cross-origin fetch cannot pass CORS preflight for. Turn it on if the API is
@@ -130,13 +147,17 @@ Per-route limits via Flask-Limiter, keyed by client IP:
 | ---------------------- | ------------- |
 | `POST /auth/login`     | 10 per minute |
 | `POST /auth/register`  | 5 per hour    |
+| `POST /auth/forgot-password`, `/account/verify-email/*` | 5 per hour (`RESET_RATE_LIMIT`) |
+| `DELETE /account/account` | 3 per hour (`DELETE_RATE_LIMIT`) |
 | `POST /footprint/calculate` | 120 per minute |
 | `GET /footprint/history`, `/footprint/summary` | 120 per minute |
 
-Breaches return `429` with a JSON body and `Retry-After`. The default
-`memory://` storage resets on restart and is **not shared between workers**; set
-`RATELIMIT_STORAGE_URI` to Redis before running more than one process, otherwise
-the effective limit is multiplied by the worker count.
+Breaches return `429` with a JSON body and `Retry-After`.
+
+**Set `RATELIMIT_STORAGE_URI` to Redis before running more than one worker.** The
+default `memory://` store counts per process, so a limit of 10/minute becomes 40
+with four workers. That is a security control quietly not applying, not a
+performance detail.
 
 ## API
 
@@ -151,6 +172,13 @@ All `/footprint/*` routes except `/footprint/factors` require a session cookie.
 | GET    | `/auth/me`               | Confirm a session; email is masked       |
 | POST   | `/auth/forgot-password`  | Email a reset link; never reveals whether the address exists |
 | POST   | `/auth/reset-password`   | Consume a token and set a new password   |
+| POST   | `/account/verify-email/request` | Re-send a confirmation link         |
+| POST   | `/account/verify-email/confirm` | Confirm an address from its token |
+| GET    | `/account/sessions`      | This account's active devices           |
+| DELETE | `/account/sessions`      | Sign out everywhere                     |
+| DELETE | `/account/sessions/<id>` | Sign out one device                     |
+| GET    | `/account/export`        | All entries as JSON, or `?format=csv`   |
+| DELETE | `/account/account`       | Delete the account; requires the password |
 | POST   | `/footprint/calculate`   | Validate, calculate and store an entry   |
 | GET    | `/footprint/history`     | Stored entries, newest first, paged      |
 | GET    | `/footprint/summary`     | Lifetime totals per category and region  |
@@ -187,7 +215,48 @@ Email is off by default. With `MAIL_ENABLED=false` the link is returned in the
 response as `dev_token` and also written to the log, so the flow is usable locally
 with no mail account. `Config.validate()` rejects `MAIL_ENABLED` set without
 `MAIL_HOST`, and the reverse, because either mistake means reset emails silently
-go nowhere. Email is not verified, and an address is not required to register.
+go nowhere. An address is not required to register.
+
+## Email confirmation
+
+A registration form accepts any address, so anyone could register
+`you@example.com`. Without confirmation, password reset would then mail a working
+link to your inbox, handing over the account to whoever registered it first.
+
+`POST /account/verify-email/request` sends a confirmation link (the dashboard
+prompts for one when an address is present but unconfirmed) and
+`POST /account/verify-email/confirm` consumes it. Until the address is confirmed,
+`POST /auth/forgot-password` refuses to send anything.
+
+- **The refusal is indistinguishable from success.** Same `202`, same body, same
+  wording as an unknown address, so the endpoint still cannot be used to discover
+  which addresses are registered or which are confirmed.
+- **A failed send does not lose the account.** The address simply stays
+  unconfirmed and the user can ask again.
+- **Existing accounts start unverified.** The migration backfills `false`, not
+  `true`: nobody has proved those addresses, and marking them confirmed would
+  preserve exactly the hole the column exists to close.
+
+Confirmation lasts `EMAIL_VERIFICATION_TTL_MINUTES` (24h) and is single-use.
+Set `RESET_REQUIRES_VERIFIED_EMAIL=false` to allow resets on unconfirmed
+addresses; `Config.validate()` then no longer requires working mail.
+
+## Account control
+
+**Sessions.** `GET /account/sessions` lists the account's devices with a coarse
+label (browser family), IP and last-seen time, marking the current one. Each can
+be ended individually, or all at once. Revoking the session in use clears this
+browser's cookies; revoking another leaves this one working. Lookups are scoped
+by `user_id` as well as session id, so a guessed UUID cannot reach a stranger's
+session.
+
+**Export.** `GET /account/export` returns every entry as JSON, or as CSV with
+`?format=csv`. Both include the factor snapshot, so the file stays meaningful
+even after the factor table is updated.
+
+**Deletion.** `DELETE /account/account` removes the account, its history and its
+sessions. It requires the password again: a stolen session cookie must not be
+enough to destroy someone's data. The UI additionally requires typing `DELETE`.
 
 ## Emission factors
 
@@ -220,11 +289,12 @@ factor snapshot, so mixed-region histories are reported correctly.
 
 ```bash
 cd backend
-python -m pytest tests -q        # 163 tests
+python -m pytest tests -q        # 199 tests
 ruff check .                    # lint
 
 cd frontend
-npm test                        # 86 tests
+npm test                        # 126 tests
+npm run typecheck               # tsc --noEmit, strict
 npm run lint
 npm run build
 ```
@@ -235,21 +305,58 @@ this code, so it documents behaviour that must not silently regress.
 `test_migrations.py` drives the real `flask db` CLI to prove a column can be
 widened on a populated database.
 
-Frontend tests use Vitest and Testing Library. `src/test/api.test.js` covers the
-credentialed request layer and the transparent refresh, which was the part
-previously verified only by hand.
+Frontend tests use Vitest and Testing Library. The pure input parsing lives in
+`src/lib/footprint.ts` and is tested there directly, because a DOM test cannot
+reach it: `type="number"` inputs reject the very values the parser exists to
+catch. Test mocks go through `src/test/api-mock.ts` so `.mockResolvedValue`
+stays type-checked.
 
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request to `main`:
 
-- **Backend**: `ruff check`, `flask db check`, then pytest.
-- **Frontend**: `npm test`, then `npm run build`.
+- **Backend (sqlite)**: `ruff check`, `flask db check`, pytest.
+- **Backend (postgres)**: the migrations and the suite against Postgres 16.
+- **Frontend**: lint, `tsc --noEmit`, tests, build.
+
+Two of these steps exist because of specific failures this project had:
 
 `flask db check` autogenerates against a migrated database and fails if the
-models have drifted from the migration history. That catches the failure this
-project started with: a model edited without a matching revision, which only
-breaks once deployed.
+models have drifted from the migration history, catching a model edited without
+a matching revision, which only breaks once deployed.
+
+The Postgres job exists because SQLite tolerates faults Postgres rejects. The
+whole migration chain originally passed on SQLite and failed on Postgres three
+times: unquoted `user` (a reserved word), `= 0` against a boolean column, and
+the driver needing a password. `tsc --noEmit` is separate from `npm run build`
+because esbuild strips types without checking them, so a successful build proves
+nothing about type safety.
+
+## Deployment
+
+```bash
+pip install -r backend/requirements.txt -r backend/requirements-prod.txt
+cd backend && FLASK_APP=app.py flask db upgrade   # before serving traffic
+gunicorn wsgi:app
+```
+
+`wsgi.py` exposes the app and gunicorn's settings, all overridable by environment
+variable:
+
+| Variable                  | Default         | Notes |
+| ------------------------- | --------------- | ----- |
+| `BIND`                    | `127.0.0.1:8000` | Loopback is correct behind a reverse proxy. Use `0.0.0.0` only with no other network boundary. |
+| `WEB_CONCURRENCY`         | 2               | Processes |
+| `WEB_THREADS`             | 4               | Threads share one connection pool, so prefer these over more processes |
+| `WEB_TIMEOUT`             | 60              | |
+| `FORWARDED_ALLOW_IPS`     | `127.0.0.1`     | Must match `PROXY_FIX_X_FOR` |
+| `RATELIMIT_STORAGE_URI`   | `memory://`     | **Set this to Redis.** See Rate limiting. |
+
+`PROXY_FIX_X_FOR` defaults to `0`, meaning no proxy is trusted. That matters:
+with it unset, a client can send `X-Forwarded-Proto: https` and the app will
+believe it is served over TLS, which decides the Secure cookie flag. Set it to
+the real number of proxies in front of the app, and keep `FORWARDED_ALLOW_IPS`
+in agreement.
 
 ## Known limitations
 
@@ -257,19 +364,27 @@ breaks once deployed.
   are not region-specific below the country level. Wire in a live data source such
   as Electricity Maps if that precision matters. The factor snapshot on each entry
   means such an update will not rewrite history.
-- **Email addresses are not verified.** A user can register someone else's address,
-  which means a reset link could in principle reach the wrong inbox. Full fix is a
-  confirmation step before the address is trusted.
+- **Emission factors are static reference values.** Grid mixes shift over time and
+  are not region-specific below the country level. Wire in a live data source such
+  as Electricity Maps if that precision matters. The factor snapshot on each entry
+  means such an update will not rewrite history.
 - **Diet factors are global medians, not per-country.** Car factors are a single
   global average, so fuel mix differences between countries are not modelled.
-- **No account deletion or data export.** There is no way for a user to erase their
-  history or take it elsewhere.
-- **Rate-limit storage defaults to memory://**, which resets on restart and is not
-  shared between workers. Set `RATELIMIT_STORAGE_URI` to Redis before running more
-  than one process, or the effective limit multiplies by worker count.
-- **Sessions are not revocable per device.** A password change kills every session,
-  but there is no "log out everywhere" or per-device list.
-- **No TypeScript or type checking.** ESLint and 86 tests cover behaviour, but
-  nothing checks the shapes crossing the API boundary at compile time.
-- **CI runs migrations against SQLite only.** A green pipeline proves the schema
-  applies to an empty database, not that it will apply cleanly to production data.
+- **Rate limits need Redis in production.** The default `memory://` store counts
+  per process, so N workers means N times the intended limit. This is set by
+  configuration, not by the app, and nothing warns you at startup if you leave it.
+- **No password rotation policy or breach check.** Passwords are hashed with
+  Werkzeug's scrypt default. There is no check against known-compromised
+  passwords, which is the most likely way a password here is guessed in practice.
+- **Sessions are not visible enough to spot theft at a glance.** The device list
+  shows a browser family and IP, so it is recognisable, but it is not a full
+  fingerprint and will not distinguish two laptops on the same network.
+- **No frontend test for the layout as rendered.** jsdom implements none of
+  `overflow-x`, `white-space` or `font-variant-numeric`, so the stylesheet rules
+  the history table depends on are asserted by reading the CSS source rather than
+  computed style. That catches a rule being deleted; it cannot catch the rule
+  being overridden by a later one.
+- **No 2FA.** Sessions are revocable and password reset is token-based, but a
+  phished password is a full account compromise.
+- **Single-region factor granularity** means a user who moves house keeps one
+  factor set per entry rather than a history of grid changes.
