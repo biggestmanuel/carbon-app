@@ -52,6 +52,29 @@ def create_app(config_object=Config):
 
 
 def _register_error_handlers(app):
+    @jwt.token_in_blocklist_loader
+    def is_token_revoked(_header, payload):
+        """Reject tokens issued before a password change.
+
+        Checked on every request, so a session revoked by a password reset
+        stops working immediately instead of lasting out the token lifetime.
+        """
+        from models import User
+
+        version = payload.get(app.config["JWT_SESSION_VERSION_CLAIM"])
+        try:
+            user_id = int(payload.get("sub"))
+        except (TypeError, ValueError):
+            return True
+
+        # Read only the two columns needed, without pulling in the whole row.
+        row = db.session.execute(
+            db.select(User.id, User.token_version).where(User.id == user_id)
+        ).first()
+        if row is None:
+            return True
+        return version != row.token_version
+
     @app.errorhandler(404)
     def handle_404(err):
         return jsonify({"msg": "Not found"}), 404

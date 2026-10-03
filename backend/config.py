@@ -56,6 +56,12 @@ class Config:
     # cross-origin fetch cannot pass CORS preflight for. Turn on if the API is
     # ever called from a context that allows those.
     JWT_COOKIE_CSRF_PROTECT = _bool_env("JWT_COOKIE_CSRF_PROTECT", False)
+
+    # --- Session revocation -------------------------------------------------
+    # Password changes bump this, and any token issued before the change is
+    # rejected on its next use. Without it a stolen refresh cookie survives a
+    # legitimate password reset.
+    JWT_SESSION_VERSION_CLAIM = "ver"
     # Rotating refresh cookie, so the 30 minute access token is not a hard stop.
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=_int_env("JWT_REFRESH_TOKEN_DAYS", 7))
     JWT_COOKIE_REFRESH_PROTECT = False
@@ -82,6 +88,23 @@ class Config:
     REGISTER_RATE_LIMIT = os.environ.get("REGISTER_RATE_LIMIT", "5 per hour")
     CALCULATE_RATE_LIMIT = os.environ.get("CALCULATE_RATE_LIMIT", "120 per minute")
     READ_RATE_LIMIT = os.environ.get("READ_RATE_LIMIT", "120 per minute")
+    # Password reset is token-guessing sensitive, so it is tighter than login.
+    RESET_RATE_LIMIT = os.environ.get("RESET_RATE_LIMIT", "5 per hour")
+
+    # --- Password reset ----------------------------------------------------
+    PASSWORD_RESET_TTL_MINUTES = _int_env("PASSWORD_RESET_TTL_MINUTES", 30)
+    PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:5173")
+
+    # --- Outbound email ----------------------------------------------------
+    # Off by default, so development needs no credentials and sends nothing.
+    # Without MAIL_HOST a reset link is written to the log instead of sent.
+    MAIL_ENABLED = _bool_env("MAIL_ENABLED", False)
+    MAIL_HOST = os.environ.get("MAIL_HOST")
+    MAIL_PORT = _int_env("MAIL_PORT", 587)
+    MAIL_USERNAME = os.environ.get("MAIL_USERNAME")
+    MAIL_PASSWORD = os.environ.get("MAIL_PASSWORD")
+    MAIL_SENDER = os.environ.get("MAIL_SENDER", "no-reply@localhost")
+    MAIL_USE_TLS = _bool_env("MAIL_USE_TLS", True)
 
     # --- Input limits, enforced in routes/footprint.py and routes/auth.py ---
     MIN_PASSWORD_LENGTH = _int_env("MIN_PASSWORD_LENGTH", 8)
@@ -91,6 +114,7 @@ class Config:
     MAX_CAR_KM = 1_000_000.0
     MAX_ELECTRICITY_KWH = 1_000_000.0
     MAX_MEALS = 100_000
+    MAX_EMAIL_LENGTH = 254  # RFC 5321 practical ceiling
 
     @classmethod
     def validate(cls):
@@ -109,5 +133,13 @@ class Config:
                 )
             if "*" in cls.CORS_ORIGINS:
                 problems.append("CORS_ORIGINS cannot be '*' while cookies are enabled")
+            if cls.MAIL_ENABLED and not cls.MAIL_HOST:
+                problems.append(
+                    "MAIL_ENABLED is on but MAIL_HOST is unset; set MAIL_HOST or turn MAIL_ENABLED off"
+                )
+            if not cls.MAIL_ENABLED and cls.MAIL_HOST:
+                problems.append(
+                    "MAIL_HOST is set but MAIL_ENABLED is off; reset links would only reach the log"
+                )
         if problems:
             raise RuntimeError("Unsafe configuration:\n  - " + "\n  - ".join(problems))
