@@ -17,7 +17,7 @@ const EMPTY = { carKm: "", electricity: "", meatMeals: "", plantMeals: "" };
  * which axios serialised to `null` and the backend rejected with the
  * unhelpful "All fields must be numbers".
  */
-function parseField(field, raw) {
+export function parseField(field, raw) {
   const trimmed = String(raw).trim();
   if (trimmed === "") return { value: 0 }; // blank means "none this period"
 
@@ -95,12 +95,15 @@ function FootprintForm({ onSaved }) {
     }
   };
 
-  // Per-unit factors for the currently selected region, once known.
+  // Per-unit factors for the currently selected region, once known. Guard the
+  // lookup on the array existing: a malformed or partial /factors response must
+  // not throw while rendering the form.
+  const regions = Array.isArray(catalogue?.regions) ? catalogue.regions : [];
   const activeFactors = catalogue
     ? {
         car: 0.21,
         electricity:
-          catalogue.regions.find((r) => r.code === region)?.electricity_kwh ?? 0,
+          regions.find((r) => r.code === region)?.electricity_kwh ?? 0,
         meat: 5.0,
         plant: 2.0,
       }
@@ -119,7 +122,10 @@ function FootprintForm({ onSaved }) {
           onChange={(e) => setRegion(e.target.value)}
           disabled={!catalogue}
         >
-          {(catalogue?.regions ?? [{ code: "world", label: "World average" }]).map((r) => (
+          {(regions.length > 0
+            ? regions
+            : [{ code: "world", label: "World average" }]
+          ).map((r) => (
             <option key={r.code} value={r.code}>
               {r.label}
             </option>

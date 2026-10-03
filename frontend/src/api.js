@@ -58,10 +58,15 @@ api.interceptors.response.use(
 
     // 401 here means the access cookie expired but the refresh cookie may
     // still be good, so try once before dropping the session.
-    if (status === 401 && !isAuthEntry) {
+    //
+    // The retried request re-enters this interceptor. If the server keeps
+    // answering 401 after a *successful* refresh (revoked session, deleted
+    // user, clock skew), an unguarded retry recurses until the tab runs out
+    // of memory. _retried marks the replay so only one attempt happens.
+    if (status === 401 && !isAuthEntry && !config._retried) {
       try {
         await refreshAccessToken();
-        return api(config);
+        return api({ ...config, _retried: true });
       } catch {
         // Refresh failed or was rejected; fall through to a clean logout.
       }

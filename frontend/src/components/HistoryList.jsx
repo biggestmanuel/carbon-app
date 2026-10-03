@@ -11,8 +11,10 @@ function HistoryList({ refreshKey }) {
     setLoading(true);
     try {
       const res = await api.get("/footprint/history", { params: { limit: 25 } });
-      setEntries(res.data.entries);
-      setTotalEntries(res.data.total_entries);
+      // Guard the shape: a partial or unexpected payload must render an empty
+      // table rather than throwing on entries.length.
+      setEntries(Array.isArray(res.data?.entries) ? res.data.entries : []);
+      setTotalEntries(res.data?.total_entries ?? 0);
       setError("");
     } catch (err) {
       setError(errorMessage(err, "Could not load history."));

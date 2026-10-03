@@ -11,4 +11,16 @@ export default defineConfig({
     outDir: "dist",
     sourcemap: true,
   },
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test/setup.js"],
+    include: ["src/**/*.test.{js,jsx}"],
+    exclude: ["node_modules/**", "dist/**"],
+    // The fork pool ran this suite out of memory on Windows (worker exit 134).
+    // A single thread keeps the footprint flat.
+    pool: "threads",
+    maxWorkers: 1,
+    minWorkers: 1,
+  },
 });
