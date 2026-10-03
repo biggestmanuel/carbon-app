@@ -1,3 +1,5 @@
+import re
+import uuid
 from datetime import UTC, datetime
 
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -52,6 +54,30 @@ class User(db.Model):
         nullable=False,
     )
 
+    # Deleting an account must not leave its sessions behind. Not
+    # passive_deletes: SQLite only honours ON DELETE CASCADE when foreign_keys
+    # is enabled, which it is not by default.
+    footprints = db.relationship(
+        "Footprint",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        # Not passive_deletes: SQLite only honours ON DELETE CASCADE when
+        # foreign_keys is enabled, which it is not by default. Leaving this on
+        # meant deleting an account left its entire history behind, still
+        # reachable by user_id.
+        passive_deletes=False,
+    )
+
+    # Deleting an account must not leave its sessions behind. Not
+    # passive_deletes: SQLite only honours ON DELETE CASCADE when foreign_keys
+    # is enabled, which it is not by default.
+    sessions = db.relationship(
+        "UserSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=False,
+    )
+
     # Reset tokens are stored hashed and single-use: the row is cleared the
     # moment the password changes.
     password_reset_token_hash = db.Column(db.String(64), nullable=True)
@@ -62,8 +88,14 @@ class User(db.Model):
     # remaining valid until it expires.
     token_version = db.Column(db.Integer, nullable=False, default=1)
 
-    footprints = db.relationship(
-        "Footprint",
+    # Ownership of an address is only assumed once the recipient clicks the
+    # confirmation link. Until then the address can be registered by anyone,
+    # which is how a reset link ends up in someone else's inbox.
+    email_verified = db.Column(db.Boolean, nullable=False, default=False)
+    email_verification_token_hash = db.Column(db.String(64), nullable=True)
+    email_verification_sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    sessions = db.relationship(
+        "UserSession",
         back_populates="user",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -86,8 +118,9 @@ class User(db.Model):
 
     def to_dict(self):
         payload = {"id": self.id, "username": self.username}
-        # Reveal only a masked address, and never the reset token hash.
+        # Reveal only a masked address, and never a token hash.
         payload["has_email"] = bool(self.email)
+        payload["email_verified"] = bool(self.email_verified)
         if self.email:
             payload["email"] = _mask_email(self.email)
         return payload
@@ -100,6 +133,46 @@ class User(db.Model):
         if not self.password_reset_token_hash or not self.password_reset_sent_at:
             return False
         return not is_expired(self.password_reset_sent_at, now=now)
+
+    def request_email_verification(self, token_hash, now=None):
+        self.email_verification_token_hash = token_hash
+        self.email_verification_sent_at = now or datetime.now(UTC)
+
+    def matches_verification_token(self, raw_token, now=None):
+        """True only if the address is still unverified and the token is live."""
+        if self.email_verified or not raw_token:
+            return False
+        if not self.email_verification_token_hash or not self.email_verification_sent_at:
+            return False
+        if is_expired(self.email_verification_sent_at, now=now):
+            return False
+        return verify_token(raw_token, self.email_verification_token_hash)
+
+    def mark_email_verified(self):
+        self.email_verified = True
+        self.email_verification_token_hash = None
+        self.email_verification_sent_at = None
+
+    def can_reset_password(self):
+        """Only a confirmed address can receive a reset link.
+
+        Mailing an unverified address is how a reset link lands in the inbox of
+        whoever actually owns it. An account with no address cannot reset at all,
+        which is stated plainly rather than silently failing.
+        """
+        return bool(self.email and self.email_verified)
+
+    def start_session(self, user_agent=None, ip_address=None):
+        """Record a newly authenticated device and return the row."""
+        session = UserSession(
+            id=str(uuid.uuid4()),
+            user_id=self.id,
+            user_agent=user_agent[:200] if user_agent else None,
+            # Sized for IPv6 including its full form.
+            ip_address=ip_address[:45] if ip_address else None,
+        )
+        db.session.add(session)
+        return session
 
     def apply_new_password(self, password_hash):
         """Set the password, burn the reset token, and revoke live sessions.
@@ -114,6 +187,81 @@ class User(db.Model):
 
     def __repr__(self):
         return f"<User {self.id} {self.username!r}>"
+
+
+class UserSession(db.Model):
+    """One logged-in device.
+
+    The token_version column on User kills every session at once, which is the
+    right default but too blunt: losing a phone should not sign you out of your
+    laptop. Each session carries its own id in the JWT, and the blocklist loader
+    checks that the id is still present, so a single device can be revoked
+    without touching the others.
+    """
+
+    __tablename__ = "user_session"
+
+    id = db.Column(db.String(36), primary_key=True)
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Coarse device hints only. Deliberately not a fingerprint: it is for a human
+    # to recognise their own sessions, not for tracking.
+    user_agent = db.Column(db.String(200), nullable=True)
+    ip_address = db.Column(db.String(45), nullable=True)  # holds IPv6
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    last_seen_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    user = db.relationship("User", back_populates="sessions")
+
+    def to_dict(self, current_id=None):
+        return {
+            "id": self.id,
+            "label": describe_device(self.user_agent),
+            "user_agent": self.user_agent,
+            "ip_address": self.ip_address,
+            "created_at": _iso_utc(self.created_at),
+            "last_seen_at": _iso_utc(self.last_seen_at),
+            "current": self.id == current_id,
+        }
+
+    def __repr__(self):
+        return f"<UserSession {self.id} user={self.user_id}>"
+
+
+# Order matters: the most specific token first.
+_DEVICE_PATTERNS = (
+    ("Edge", r"Edg/"),
+    ("Opera", r"OPR/"),
+    ("Firefox", r"Firefox/"),
+    ("Chrome", r"Chrome/"),
+    ("Safari", r"Safari/"),
+    ("curl", r"curl/"),
+    ("Postman", r"PostmanRuntime/"),
+    ("Python", r"python-requests|Python/"),
+)
+
+
+def describe_device(user_agent):
+    """Best-effort human label for a session row. Never raises."""
+    if not user_agent:
+        return "Unknown device"
+    for name, pattern in _DEVICE_PATTERNS:
+        if re.search(pattern, user_agent):
+            return name
+    return "Unknown device"
 
 
 class Footprint(db.Model):

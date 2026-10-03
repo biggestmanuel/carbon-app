@@ -4,6 +4,7 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
+    get_jwt,
     get_jwt_identity,
     jwt_required,
     set_access_cookies,
@@ -14,8 +15,8 @@ from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from extensions import db, limiter, rate_limits_exempt
-from mail import send_password_reset
-from models import User
+from mail import send_password_reset, send_verification
+from models import User, UserSession
 from passwords import generate_token, hash_password, hash_token
 
 auth_bp = Blueprint("auth", __name__)
@@ -114,11 +115,32 @@ def register():
             return jsonify({"msg": "Email already registered"}), 409
         return jsonify({"msg": "Username already taken"}), 409
 
-    return jsonify({
+    # Address ownership is only established once the recipient clicks the link.
+    # Until then the address is not trusted for password reset.
+    dev_token = None
+    if email:
+        raw_token, token_hash = generate_token()
+        user.request_email_verification(token_hash)
+        db.session.commit()
+        try:
+            send_verification(email, raw_token)
+            if not current_app.config["MAIL_ENABLED"]:
+                dev_token = raw_token
+        except Exception:
+            # The account still exists and works; only confirmation failed.
+            db.session.rollback()
+            current_app.logger.exception("Verification email failed during registration")
+
+    payload = {
         "msg": "User registered",
-        # Without an address there is nowhere to send a reset link, so say so.
-        "can_reset_password": bool(email),
-    }), 201
+        # Without a confirmed address there is no way to recover the account.
+        "can_reset_password": False,
+        "email_verified": False,
+        "verification_required": bool(email),
+    }
+    if dev_token:
+        payload["dev_token"] = dev_token
+    return jsonify(payload), 201
 
 
 @auth_bp.route("/login", methods=["POST"])
@@ -135,49 +157,93 @@ def login():
     password_ok = check_password_hash(user.password_hash if user else _DUMMY_HASH, password)
 
     if user and password_ok:
+        # One session row per authenticated device, so this login can be
+        # revoked on its own later.
+        session = user.start_session(
+            user_agent=request.headers.get("User-Agent"), ip_address=_client_ip()
+        )
+        db.session.commit()
+
         # Tokens go into httpOnly cookies, never into the JSON body, so page
         # scripts and XSS payloads cannot read them out of localStorage.
-        response = jsonify({"msg": "Logged in", "username": user.username})
+        response = jsonify({
+            "msg": "Logged in",
+            "username": user.username,
+            "email_verified": bool(user.email_verified),
+        })
         set_access_cookies(
             response,
-            _access_token_for(user),
+            _access_token_for(user, session.id),
             max_age=int(current_app.config["JWT_ACCESS_TOKEN_EXPIRES"].total_seconds()),
         )
         set_refresh_cookies(
             response,
-            _refresh_token_for(user),
+            _refresh_token_for(user, session.id),
             max_age=int(current_app.config["JWT_REFRESH_TOKEN_EXPIRES"].total_seconds()),
         )
         return response, 200
     return jsonify({"msg": "Bad credentials"}), 401
 
 
-def _session_claims(user):
-    """Version claim carried in every token, so a reset revokes live sessions."""
-    return {current_app.config["JWT_SESSION_VERSION_CLAIM"]: user.token_version or 1}
+def _client_ip():
+    # X-Forwarded-For is only honoured because app.py installs ProxyFix for the
+    # configured number of proxies, so a direct client cannot forge it.
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr
 
 
-def _access_token_for(user):
-    return create_access_token(identity=str(user.id), additional_claims=_session_claims(user))
+def _session_claims(user, session_id):
+    """Claims carried in every token.
+
+    The version ties the token to the user's current credential state, and the
+    session id ties it to one device, so either can be revoked independently.
+    """
+    cfg = current_app.config
+    return {
+        cfg["JWT_SESSION_VERSION_CLAIM"]: user.token_version or 1,
+        cfg["JWT_SESSION_ID_CLAIM"]: session_id,
+    }
 
 
-def _refresh_token_for(user):
-    return create_refresh_token(identity=str(user.id), additional_claims=_session_claims(user))
+def _access_token_for(user, session_id):
+    return create_access_token(
+        identity=str(user.id), additional_claims=_session_claims(user, session_id)
+    )
+
+
+def _refresh_token_for(user, session_id):
+    return create_refresh_token(
+        identity=str(user.id), additional_claims=_session_claims(user, session_id)
+    )
 
 
 @auth_bp.route("/refresh", methods=["POST"])
 @jwt_required(refresh=True)
 def refresh():
-    """Mint a new access token from the refresh cookie."""
+    """Mint a new access token from the refresh cookie.
+
+    The session id is carried over so refreshing does not silently orphan the
+    session row and break per-device revocation.
+    """
     user = db.session.get(User, int(get_jwt_identity()))
     if user is None:
-        unset_jwt_cookies(jsonify({"msg": "Session ended."}))
-        return jsonify({"msg": "Session ended."}), 401
+        response = jsonify({"msg": "Session ended."})
+        unset_jwt_cookies(response)
+        return response, 401
+
+    claims = get_jwt()
+    session_id = claims.get(current_app.config["JWT_SESSION_ID_CLAIM"])
+    if not session_id:
+        response = jsonify({"msg": "Session ended."})
+        unset_jwt_cookies(response)
+        return response, 401
 
     response = jsonify({"msg": "Token refreshed"})
     set_access_cookies(
         response,
-        _access_token_for(user),
+        _access_token_for(user, session_id),
         max_age=int(current_app.config["JWT_ACCESS_TOKEN_EXPIRES"].total_seconds()),
     )
     return response
@@ -203,6 +269,13 @@ def forgot_password():
     user = User.query.filter_by(email=email).first()
     if user is None:
         current_app.logger.info("Password reset requested for unknown address")
+        return jsonify({"msg": GENERIC_RESET_MSG}), 202
+
+    # Mailing an unconfirmed address would deliver a reset link to whoever
+    # actually owns that inbox. The same generic response is returned either
+    # way, so this cannot be used to probe which addresses are verified.
+    if current_app.config["RESET_REQUIRES_VERIFIED_EMAIL"] and not user.can_reset_password():
+        current_app.logger.info("Password reset refused for unverified address")
         return jsonify({"msg": GENERIC_RESET_MSG}), 202
 
     raw_token, token_hash = generate_token()
@@ -260,8 +333,26 @@ def reset_password():
 
 
 @auth_bp.route("/logout", methods=["POST"])
+@jwt_required(optional=True)
 def logout():
-    """Idempotent: clearing cookies succeeds whether or not a session existed."""
+    """Sign out this device.
+
+    Idempotent: clearing cookies succeeds whether or not a session existed, so
+    the frontend can call it after the session has already lapsed.
+    """
+    # Remove just this device's row. "Sign out everywhere" is a separate,
+    # explicit action on /account/sessions. get_jwt() raises when no token was
+    # sent at all, and this endpoint must still succeed in that case.
+    try:
+        session_id = get_jwt().get(current_app.config["JWT_SESSION_ID_CLAIM"])
+    except Exception:
+        session_id = None
+    if session_id:
+        session = db.session.get(UserSession, session_id)
+        if session is not None:
+            db.session.delete(session)
+            db.session.commit()
+
     response = jsonify({"msg": "Logged out"})
     unset_jwt_cookies(response)
     return response

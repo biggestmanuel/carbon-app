@@ -34,12 +34,26 @@ def create_app(config_object=Config):
         supports_credentials=app.config["CORS_SUPPORTS_CREDENTIALS"],
     )
 
+    # Behind a reverse proxy, TLS termination and the client IP both live in
+    # headers the proxy sets. Trusting them blindly would let any client claim
+    # https:// and forge its IP, so only honour them for the configured depth.
+    if app.config["PROXY_FIX_X_FOR"]:
+        from werkzeug.middleware.proxy_fix import ProxyFix
+
+        app.wsgi_app = ProxyFix(
+            app.wsgi_app,
+            x_for=app.config["PROXY_FIX_X_FOR"],
+            x_proto=app.config["PROXY_FIX_X_FOR"],
+        )
+
     _register_error_handlers(app)
 
+    from routes.account import account_bp
     from routes.auth import auth_bp
     from routes.footprint import footprint_bp
 
     app.register_blueprint(auth_bp, url_prefix="/auth")
+    app.register_blueprint(account_bp, url_prefix="/account")
     app.register_blueprint(footprint_bp, url_prefix="/footprint")
 
     # Dev escape hatch only. create_all() cannot alter existing tables, so the
@@ -54,12 +68,18 @@ def create_app(config_object=Config):
 def _register_error_handlers(app):
     @jwt.token_in_blocklist_loader
     def is_token_revoked(_header, payload):
-        """Reject tokens issued before a password change.
+        """Accept a token only while its session is both current and alive.
 
-        Checked on every request, so a session revoked by a password reset
-        stops working immediately instead of lasting out the token lifetime.
+        Two independent checks, because they cover different failures:
+
+        - the version claim must match the user's, which kills every session at
+          once after a password change;
+        - the session id must still have a row, which is what lets one device be
+          revoked without signing out the others.
         """
-        from models import User
+        from datetime import UTC, datetime, timedelta
+
+        from models import User, UserSession
 
         version = payload.get(app.config["JWT_SESSION_VERSION_CLAIM"])
         try:
@@ -67,13 +87,29 @@ def _register_error_handlers(app):
         except (TypeError, ValueError):
             return True
 
-        # Read only the two columns needed, without pulling in the whole row.
-        row = db.session.execute(
-            db.select(User.id, User.token_version).where(User.id == user_id)
-        ).first()
-        if row is None:
+        user = db.session.get(User, user_id)
+        if user is None or version != (user.token_version or 1):
             return True
-        return version != row.token_version
+
+        session_id = payload.get(app.config["JWT_SESSION_ID_CLAIM"])
+        if not session_id:
+            return True
+        session = db.session.get(UserSession, session_id)
+        if session is None or session.user_id != user_id:
+            return True
+
+        # Refresh last_seen, but only occasionally: writing on every request
+        # would turn each API call into a database update.
+        interval = app.config["SESSION_TOUCH_INTERVAL_SECONDS"]
+        now = datetime.now(UTC)
+        seen = session.last_seen_at
+        if seen is not None and seen.tzinfo is None:
+            seen = seen.replace(tzinfo=UTC)
+        if seen is None or now - seen > timedelta(seconds=interval):
+            session.last_seen_at = now
+            db.session.commit()
+
+        return False
 
     @app.errorhandler(404)
     def handle_404(err):

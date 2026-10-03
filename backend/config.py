@@ -62,9 +62,18 @@ class Config:
     # rejected on its next use. Without it a stolen refresh cookie survives a
     # legitimate password reset.
     JWT_SESSION_VERSION_CLAIM = "ver"
+    # Identifies one logged-in device, so it can be revoked on its own.
+    JWT_SESSION_ID_CLAIM = "sid"
     # Rotating refresh cookie, so the 30 minute access token is not a hard stop.
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=_int_env("JWT_REFRESH_TOKEN_DAYS", 7))
     JWT_COOKIE_REFRESH_PROTECT = False
+
+    # Trust X-Forwarded-For / X-Forwarded-Proto from at most this many proxies.
+    # Zero means "no proxy", which is the correct setting when running the
+    # development server. Set it to the real hop count in production, otherwise
+    # the secure-cookie flag and client IPs are decided by client-supplied
+    # headers.
+    PROXY_FIX_X_FOR = _int_env("PROXY_FIX_X_FOR", 0, minimum=0)
 
     # --- Browser access ----------------------------------------------------
     CORS_ORIGINS = [
@@ -90,10 +99,24 @@ class Config:
     READ_RATE_LIMIT = os.environ.get("READ_RATE_LIMIT", "120 per minute")
     # Password reset is token-guessing sensitive, so it is tighter than login.
     RESET_RATE_LIMIT = os.environ.get("RESET_RATE_LIMIT", "5 per hour")
+    # Deletion is irreversible, so it is deliberately hard to trigger.
+    DELETE_RATE_LIMIT = os.environ.get("DELETE_RATE_LIMIT", "3 per hour")
 
     # --- Password reset ----------------------------------------------------
     PASSWORD_RESET_TTL_MINUTES = _int_env("PASSWORD_RESET_TTL_MINUTES", 30)
     PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:5173")
+
+    # --- Email verification -------------------------------------------------
+    EMAIL_VERIFICATION_TTL_MINUTES = _int_env("EMAIL_VERIFICATION_TTL_MINUTES", 1440)
+    # When true, only a confirmed address can request a password reset. Leaving
+    # this on is the point of verification: an unconfirmed address might belong
+    # to someone else, so mailing it hands them a reset link.
+    RESET_REQUIRES_VERIFIED_EMAIL = _bool_env("RESET_REQUIRES_VERIFIED_EMAIL", True)
+
+    # --- Sessions -----------------------------------------------------------
+    # How often a session's last_seen_at is written, to avoid a DB write on
+    # every single request.
+    SESSION_TOUCH_INTERVAL_SECONDS = _int_env("SESSION_TOUCH_INTERVAL_SECONDS", 300)
 
     # --- Outbound email ----------------------------------------------------
     # Off by default, so development needs no credentials and sends nothing.
@@ -140,6 +163,11 @@ class Config:
             if not cls.MAIL_ENABLED and cls.MAIL_HOST:
                 problems.append(
                     "MAIL_HOST is set but MAIL_ENABLED is off; reset links would only reach the log"
+                )
+            if cls.RESET_REQUIRES_VERIFIED_EMAIL and not cls.MAIL_ENABLED:
+                problems.append(
+                    "RESET_REQUIRES_VERIFIED_EMAIL is on but MAIL_ENABLED is off, so no address "
+                    "can ever be confirmed and password reset is unreachable"
                 )
         if problems:
             raise RuntimeError("Unsafe configuration:\n  - " + "\n  - ".join(problems))

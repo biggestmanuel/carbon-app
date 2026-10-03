@@ -13,7 +13,8 @@ def restore_config():
     """These tests mutate class attributes; put them back afterwards."""
     saved = {name: getattr(Config, name) for name in
              ("ENV", "SECRET_KEY", "JWT_SECRET_KEY", "AUTO_CREATE_TABLES",
-              "JWT_COOKIE_SECURE", "CORS_ORIGINS")}
+              "JWT_COOKIE_SECURE", "CORS_ORIGINS", "MAIL_ENABLED", "MAIL_HOST",
+              "RESET_REQUIRES_VERIFIED_EMAIL")}
     yield
     for name, value in saved.items():
         setattr(Config, name, value)
@@ -31,11 +32,16 @@ class _GoodProd:
     AUTO_CREATE_TABLES = False
     JWT_COOKIE_SECURE = True
     CORS_ORIGINS = ["https://app.example"]
+    # Reset requires a verified address, which requires working mail.
+    MAIL_ENABLED = True
+    MAIL_HOST = "smtp.example.com"
+    RESET_REQUIRES_VERIFIED_EMAIL = True
 
 
 def _apply(cls):
     for name in ("ENV", "SECRET_KEY", "JWT_SECRET_KEY", "AUTO_CREATE_TABLES",
-                 "JWT_COOKIE_SECURE", "CORS_ORIGINS"):
+                 "JWT_COOKIE_SECURE", "CORS_ORIGINS", "MAIL_ENABLED", "MAIL_HOST",
+                 "RESET_REQUIRES_VERIFIED_EMAIL"):
         setattr(Config, name, getattr(cls, name))
 
 
@@ -103,6 +109,26 @@ def test_mail_enabled_without_host_is_rejected():
     with pytest.raises(RuntimeError) as exc:
         Config.validate()
     assert "MAIL_HOST" in str(exc.value)
+
+
+def test_verification_required_without_mail_is_rejected():
+    # No mail means nothing can ever be confirmed, so requiring verification
+    # would make password reset permanently unreachable.
+    _apply(_GoodProd)
+    Config.MAIL_ENABLED = False
+    Config.RESET_REQUIRES_VERIFIED_EMAIL = True
+    with pytest.raises(RuntimeError) as exc:
+        Config.validate()
+    assert "RESET_REQUIRES_VERIFIED_EMAIL" in str(exc.value)
+
+
+def test_proxy_trust_defaults_to_zero():
+    # Trusting forwarded headers with no proxy in front lets a client claim
+    # https:// and forge its IP.
+    assert Config.PROXY_FIX_X_FOR == 0
+    assert Config.SESSION_TOUCH_INTERVAL_SECONDS > 0
+    assert Config.JWT_SESSION_ID_CLAIM == "sid"
+    assert Config.EMAIL_VERIFICATION_TTL_MINUTES > 0
 
 
 def test_mail_host_without_enable_is_rejected():

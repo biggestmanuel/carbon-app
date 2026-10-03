@@ -88,3 +88,23 @@ def send_password_reset(to_email, raw_token):
     mailer = get_mailer()
     mailer.send(to_email, "Reset your password", body)
     return mailer.name
+
+
+def send_verification(to_email, raw_token):
+    """Send an address-confirmation link.
+
+    The account exists and works right now; this only establishes that whoever
+    registered it also controls the mailbox. Until it is clicked, a reset link
+    would be sent to an address the app cannot prove belongs to them.
+    """
+    cfg = current_app.config
+    link = f"{cfg['PUBLIC_BASE_URL'].rstrip('/')}/verify-email?token={raw_token}"
+    body = (
+        "Please confirm this email address for your Carbon Footprint account.\n\n"
+        f"Open this link within {int(cfg['EMAIL_VERIFICATION_TTL_MINUTES'])} minutes:\n"
+        f"{link}\n\n"
+        "If you did not create this account, ignore this message. Nothing changes.\n"
+    )
+    mailer = get_mailer()
+    mailer.send(to_email, "Confirm your email address", body)
+    return mailer.name
