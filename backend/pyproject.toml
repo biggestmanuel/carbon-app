@@ -1,0 +1,36 @@
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = ["migrations"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # import sorting
+    "B",    # flake8-bugbear
+    "C4",   # comprehensions
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "RET",  # return consistency
+    "ARG",  # unused arguments
+]
+ignore = [
+    # Flask injects things into app context; shadowing is not our concern.
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use fixtures as plain arguments and shadow builtins for readability.
+"tests/*" = ["ARG001", "ARG002", "A002"]
+# Flask and flask-jwt-extended require handlers to accept the exception, even
+# when the body does not use it.
+"app.py" = ["ARG001"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "config", "extensions", "factors", "models", "routes"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

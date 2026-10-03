@@ -125,7 +125,7 @@ def test_session_lifetimes_are_sane():
 
 
 def test_cookie_is_secure_in_production_only():
-    assert Config.JWT_COOKIE_SECURE == (Config.ENV == "production")
+    assert (Config.ENV == "production") == Config.JWT_COOKIE_SECURE
 
 
 def test_cors_supports_credentials():

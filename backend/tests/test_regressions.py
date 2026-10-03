@@ -4,8 +4,8 @@ import math
 
 from flask import current_app
 
-from models import Footprint, User
 from factors import factors_for
+from models import Footprint, User
 
 
 # --- Bug: float("nan") / float("inf") were accepted and produced a NaN or

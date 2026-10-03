@@ -61,7 +61,11 @@ class Config:
     JWT_COOKIE_REFRESH_PROTECT = False
 
     # --- Browser access ----------------------------------------------------
-    CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
+    CORS_ORIGINS = [
+        o.strip()
+        for o in os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",")
+        if o.strip()
+    ]
     # Required for the browser to accept the auth cookie cross-origin. Safe only
     # because CORS_ORIGINS is an explicit allowlist and never "*".
     CORS_SUPPORTS_CREDENTIALS = True
@@ -100,7 +104,9 @@ class Config:
             if cls.AUTO_CREATE_TABLES:
                 problems.append("AUTO_CREATE_TABLES must be off in production; use `flask db upgrade`")
             if not cls.JWT_COOKIE_SECURE:
-                problems.append("JWT_COOKIE_SECURE must be on in production or the cookie travels over plain HTTP")
+                problems.append(
+                    "JWT_COOKIE_SECURE must be on in production or the cookie travels over plain HTTP"
+                )
             if "*" in cls.CORS_ORIGINS:
                 problems.append("CORS_ORIGINS cannot be '*' while cookies are enabled")
         if problems:

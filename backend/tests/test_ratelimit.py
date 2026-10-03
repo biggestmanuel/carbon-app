@@ -5,7 +5,6 @@ so these tests enable it explicitly and use a fresh in-memory store each time.
 """
 import pytest
 
-
 from config import Config
 
 
@@ -42,16 +41,16 @@ def limited_client():
         db.drop_all()
 
 
+BAD_LOGIN = {"username": "ratetest", "password": "wrong-password"}
+
+
 def _register(client, username="ratetest", password="correct-horse"):
     return client.post("/auth/register", json={"username": username, "password": password})
 
 
 def test_login_is_rate_limited(limited_client):
     _register(limited_client)
-    statuses = [
-        limited_client.post("/auth/login", json={"username": "ratetest", "password": "wrong-password"}).status_code
-        for _ in range(8)
-    ]
+    statuses = [limited_client.post("/auth/login", json=BAD_LOGIN).status_code for _ in range(8)]
     assert 429 in statuses, f"expected a 429, got {statuses}"
     assert 401 in statuses, "first attempts should still be rejected normally"
 
@@ -59,7 +58,7 @@ def test_login_is_rate_limited(limited_client):
 def test_rate_limited_response_is_json(limited_client):
     _register(limited_client)
     for _ in range(8):
-        res = limited_client.post("/auth/login", json={"username": "ratetest", "password": "wrong-password"})
+        res = limited_client.post("/auth/login", json=BAD_LOGIN)
         if res.status_code == 429:
             break
     assert res.status_code == 429
@@ -102,4 +101,4 @@ def test_limits_disabled_when_flag_off(client):
     assert client.application.config["RATELIMIT_ENABLED"] is False
     client.post("/auth/register", json={"username": "alice", "password": "correct-horse"})
     for _ in range(30):
-        assert client.post("/auth/login", json={"username": "alice", "password": "wrong-password"}).status_code == 401
+        assert client.post("/auth/login", json=BAD_LOGIN).status_code == 401

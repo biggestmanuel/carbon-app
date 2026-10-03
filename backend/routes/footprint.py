@@ -1,10 +1,10 @@
 import math
 
-from flask import Blueprint, request, jsonify, current_app
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask import Blueprint, current_app, jsonify, request
+from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from extensions import db, limiter, rate_limits_exempt
-from factors import DEFAULT_REGION, factors_for, is_valid_region, catalogue, region_codes
+from factors import DEFAULT_REGION, catalogue, factors_for, is_valid_region, region_codes
 from models import Footprint
 
 footprint_bp = Blueprint("footprint", __name__)

@@ -1,9 +1,9 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from flask import Flask, jsonify
 from flask_cors import CORS
-from dotenv import load_dotenv
 
 from config import Config
 from extensions import db, jwt, limiter, migrate
@@ -78,7 +78,10 @@ def _register_error_handlers(app):
     # frontend can tell an expired token from a wrong password.
     @jwt.expired_token_loader
     def on_expired_token(_header, _payload):
-        return jsonify({"msg": "Session expired, please log in again", "code": "token_expired"}), 401
+        return (
+            jsonify({"msg": "Session expired, please log in again", "code": "token_expired"}),
+            401,
+        )
 
     @jwt.invalid_token_loader
     def on_invalid_token(reason):
@@ -86,7 +89,10 @@ def _register_error_handlers(app):
 
     @jwt.unauthorized_loader
     def on_missing_token(reason):
-        return jsonify({"msg": "Authentication required", "code": "token_missing", "detail": str(reason)}), 401
+        return (
+            jsonify({"msg": "Authentication required", "code": "token_missing", "detail": str(reason)}),
+            401,
+        )
 
     # Consistent JSON for throttled requests. Werkzeug already computes
     # Retry-After for TooManyRequests; the limiter sets the X-RateLimit-*

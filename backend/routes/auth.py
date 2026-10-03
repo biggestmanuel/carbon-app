@@ -1,11 +1,6 @@
 import re
 
-from flask import Blueprint, request, jsonify, current_app
-from sqlalchemy.exc import IntegrityError
-from werkzeug.security import generate_password_hash, check_password_hash
-
-from extensions import db, limiter, rate_limits_exempt
-from models import User
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
@@ -15,6 +10,11 @@ from flask_jwt_extended import (
     set_refresh_cookies,
     unset_jwt_cookies,
 )
+from sqlalchemy.exc import IntegrityError
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from extensions import db, limiter, rate_limits_exempt
+from models import User
 
 auth_bp = Blueprint("auth", __name__)
 
