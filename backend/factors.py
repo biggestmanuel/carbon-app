@@ -65,11 +65,19 @@ def is_valid_region(region):
     return isinstance(region, str) and region in GRID_FACTORS_G_PER_KWH
 
 
-def factors_for(region):
-    """Return the factor set for a region, falling back to the world average."""
+def factors_for(region, travel_region=None):
+    """Factor set for a region, falling back to the world average.
+
+    travel_region is where the driving happened, which can differ from the
+    home grid (a UK resident driving in France). Car travel is a fuel
+    combustion figure rather than a grid figure, so it is driven by the travel
+    region, while electricity uses the home region.
+    """
     region = region if is_valid_region(region) else DEFAULT_REGION
+    travel = travel_region if is_valid_region(travel_region) else region
     return {
         "region": region,
+        "travel_region": travel,
         "factors_version": FACTORS_VERSION,
         "car_km": _CAR_KM,
         # g -> kg
@@ -79,11 +87,22 @@ def factors_for(region):
     }
 
 
+def snapshot(factors):
+    """The subset stored on a Footprint row so history stays reproducible."""
+    return {
+        "car_km": factors["car_km"],
+        "electricity_kwh": factors["electricity_kwh"],
+        "meat_meal": factors["meat_meal"],
+        "plant_meal": factors["plant_meal"],
+    }
+
+
 def catalogue():
     """Everything the frontend needs to render labels and hints."""
     return {
         "default_region": DEFAULT_REGION,
         "factors_version": FACTORS_VERSION,
+        "source": "static-reference",
         "regions": [
             {
                 "code": code,

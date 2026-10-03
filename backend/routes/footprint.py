@@ -4,7 +4,14 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from extensions import db, limiter, rate_limits_exempt
-from factors import DEFAULT_REGION, catalogue, factors_for, is_valid_region, region_codes
+from factors import (
+    DEFAULT_REGION,
+    catalogue,
+    factors_for,
+    is_valid_region,
+    region_codes,
+    snapshot,
+)
 from models import Footprint
 
 footprint_bp = Blueprint("footprint", __name__)
@@ -62,13 +69,13 @@ def _breakdown(values, factors):
     }
 
 
-def _requested_region(data):
-    """Read and validate the optional region, falling back to the world average."""
-    region = data.get("region", DEFAULT_REGION)
+def _requested_region(data, key="region", fallback=DEFAULT_REGION):
+    """Read and validate an optional region field, falling back when blank."""
+    region = data.get(key)
     if region is None or region == "":
-        return DEFAULT_REGION, None
+        return fallback, None
     if not isinstance(region, str) or not is_valid_region(region):
-        return None, f"region must be one of: {', '.join(region_codes())}"
+        return None, f"{key} must be one of: {', '.join(region_codes())}"
     return region, None
 
 
@@ -92,9 +99,16 @@ def calculate():
         else:
             values[field] = parsed
 
+    # Where the electricity came from, and separately where the driving
+    # happened. Blank travel_region means "same as home".
     region, region_error = _requested_region(data)
     if region_error:
         errors["region"] = region_error
+    travel_region, travel_error = _requested_region(
+        data, key="travel_region", fallback=region or DEFAULT_REGION
+    )
+    if travel_error:
+        errors["travel_region"] = travel_error
 
     if errors:
         # Report every bad field at once instead of failing on the first.
@@ -104,7 +118,7 @@ def calculate():
     if user_id is None:
         return jsonify({"msg": "Malformed token identity"}), 401
 
-    factors = factors_for(region)
+    factors = factors_for(region, travel_region)
     breakdown = _breakdown(values, factors)
     total = sum(breakdown.values())
 
@@ -113,6 +127,9 @@ def calculate():
         total=total,
         region=factors["region"],
         factors_version=factors["factors_version"],
+        # Snapshot the factors so a later table update cannot retroactively
+        # change what an old entry means.
+        factors_applied=snapshot(factors),
         **values,
     )
     db.session.add(footprint)
@@ -129,9 +146,9 @@ def calculate():
         "breakdown": {k: round(v, 4) for k, v in breakdown.items()},
         "inputs": values,
         "region": factors["region"],
+        "travel_region": factors["travel_region"],
         "factors_version": factors["factors_version"],
-        "factors_applied": {k: factors[k] for k in
-                            ("car_km", "electricity_kwh", "meat_meal", "plant_meal")},
+        "factors_applied": snapshot(factors),
         "created_at": footprint.to_dict()["created_at"],
     }), 201
 
@@ -199,7 +216,10 @@ def summary():
     # so this walks the rows instead of applying one factor set.
     by_category = {"car": 0.0, "electricity": 0.0, "meat": 0.0, "plant": 0.0}
     for entry in entries:
-        factors = factors_for(entry.region)
+        # Prefer the snapshot the row was written with, so an aggregate over old
+        # history is not silently rescored by today's factor table. Fall back for
+        # rows written before snapshots existed.
+        factors = entry.factors_applied or snapshot(factors_for(entry.region))
         part = _breakdown(
             {
                 "car_km": entry.car_km,

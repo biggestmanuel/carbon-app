@@ -102,7 +102,9 @@ def test_alter_preserves_data_in_a_populated_database(migration_env):
     stamped = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     conn.close()
 
-    assert after == "VARCHAR(16)", f"column was not widened (got {after})"
+    # Head widens region to 32, so the 13-character value inserted at the first
+    # revision must still be present and must fit.
+    assert after == "VARCHAR(32)", f"column was not widened to head width (got {after})"
     assert rows == [("verylongregion", 44.1, 2)], f"data lost or altered: {rows}"
     assert stamped[0].startswith(head[:8]), f"not stamped at head: {stamped} vs {head}"
 
@@ -117,11 +119,50 @@ def test_downgrade_reverts_the_schema(migration_env):
 
     conn = sqlite3.connect(db_path)
     region_type = [c for c in conn.execute("PRAGMA table_info(footprint)") if c[1] == "region"][0][2]
+    user_cols = {c[1] for c in conn.execute("PRAGMA table_info(user)")}
     stamped = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     conn.close()
 
-    assert region_type != "VARCHAR(16)", f"downgrade did not revert: {region_type}"
+    assert region_type == "VARCHAR(8)", f"downgrade did not revert: {region_type}"
     assert stamped[0].startswith(first[:8]), f"not stamped at first: {stamped} vs {first}"
+    # Columns added by later revisions must be gone, not left orphaned.
+    assert "factors_applied" not in user_cols
+    assert not ({"email", "token_version", "updated_at"} & user_cols), (
+        f"downgrade left columns behind: {sorted(user_cols)}"
+    )
+
+
+def test_new_not_null_columns_are_backfilled(migration_env):
+    """updated_at and token_version cannot be added NOT NULL to a populated table.
+
+    Both revisions add them nullable, backfill, then tighten. This proves the
+    upgrade path works when rows already exist.
+    """
+    env, db_path = migration_env
+    revisions = _revisions(flask_db("history", env=env))
+    before_email = revisions[revisions.index("9de1effd03fd") - 1]
+
+    flask_db("upgrade", before_email, env=env)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO user (username, password_hash, created_at) VALUES (?, ?, ?)",
+        ("preexisting", "x", "2024-03-03 12:00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    flask_db("upgrade", "head", env=env)
+
+    conn = sqlite3.connect(db_path)
+    info = {c[1]: c[3] for c in conn.execute("PRAGMA table_info(user)")}
+    row = conn.execute("SELECT username, updated_at, token_version FROM user").fetchone()
+    conn.close()
+
+    assert info["updated_at"] == 1, "updated_at should end up NOT NULL"
+    assert info["token_version"] == 1, "token_version should end up NOT NULL"
+    assert row[0] == "preexisting", "row lost"
+    assert row[1] is not None, "updated_at was not backfilled"
+    assert row[2] == 1, "token_version was not backfilled to the model default"
 
 
 def test_create_all_is_disabled_by_default(migration_env):

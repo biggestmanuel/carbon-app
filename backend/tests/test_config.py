@@ -96,6 +96,32 @@ def test_production_with_wildcard_cors_is_rejected():
     assert "CORS_ORIGINS" in str(exc.value)
 
 
+def test_mail_enabled_without_host_is_rejected():
+    _apply(_GoodProd)
+    Config.MAIL_ENABLED = True
+    Config.MAIL_HOST = None
+    with pytest.raises(RuntimeError) as exc:
+        Config.validate()
+    assert "MAIL_HOST" in str(exc.value)
+
+
+def test_mail_host_without_enable_is_rejected():
+    # Reset links would only reach the log, so this is a silent misconfiguration.
+    _apply(_GoodProd)
+    Config.MAIL_ENABLED = False
+    Config.MAIL_HOST = "smtp.example.com"
+    with pytest.raises(RuntimeError) as exc:
+        Config.validate()
+    assert "MAIL_ENABLED" in str(exc.value)
+
+
+def test_reset_settings_have_sane_defaults():
+    assert Config.PASSWORD_RESET_TTL_MINUTES > 0
+    assert Config.PUBLIC_BASE_URL
+    assert Config.MAIL_ENABLED is False
+    assert Config.RESET_RATE_LIMIT
+
+
 def test_all_production_problems_are_reported_at_once():
     _apply(_GoodProd)
     Config.AUTO_CREATE_TABLES = True
