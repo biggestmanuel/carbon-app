@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { api, errorMessage } from "../api";
 
 function Login({ onAuthenticated }) {

@@ -1,14 +1,17 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { api, errorMessage } from "../api";
 
 // Mirrors the backend's MIN_PASSWORD_LENGTH / USERNAME_RE so the user gets
 // an instant answer instead of a round trip.
 const MIN_PASSWORD_LENGTH = 8;
 const USERNAME_RE = /^[A-Za-z0-9._-]+$/;
+// Deliberately loose; the backend validates and normalises.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function Register({ onRegistered }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -21,6 +24,7 @@ function Register({ onRegistered }) {
     if (password.length < MIN_PASSWORD_LENGTH)
       return `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
     if (password.length > 128) return "Password must be at most 128 characters.";
+    if (email.trim() && !EMAIL_RE.test(email.trim())) return "Enter a valid email address.";
     return null;
   };
 
@@ -35,11 +39,17 @@ function Register({ onRegistered }) {
       return;
     }
 
+    const trimmedEmail = email.trim();
     setSubmitting(true);
     try {
-      await api.post("/auth/register", { username: username.trim(), password });
+      await api.post("/auth/register", {
+        username: username.trim(),
+        password,
+        // Omitted entirely when blank: null is not the same as "not supplied".
+        ...(trimmedEmail ? { email: trimmedEmail } : {}),
+      });
       setPassword("");
-      onRegistered(username.trim());
+      onRegistered(username.trim(), Boolean(trimmedEmail));
     } catch (err) {
       setError(errorMessage(err, "Registration failed. Please try again."));
     } finally {
@@ -58,6 +68,18 @@ function Register({ onRegistered }) {
         value={username}
         onChange={(e) => setUsername(e.target.value)}
       />
+      <label htmlFor="reg-email">Email (optional)</label>
+      <input
+        id="reg-email"
+        name="email"
+        type="email"
+        autoComplete="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+      />
+      <small className="hint">
+        Needed only if you want to reset a forgotten password.
+      </small>
       <label htmlFor="reg-password">Password</label>
       <input
         id="reg-password"

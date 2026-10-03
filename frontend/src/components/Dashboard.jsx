@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import FootprintForm from "./FootprintForm.jsx";
 import Summary from "./Summary.jsx";
 import HistoryList from "./HistoryList.jsx";

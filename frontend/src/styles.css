@@ -112,6 +112,23 @@ button.secondary {
   margin-top: 0;
 }
 
+/* Inline text action, e.g. "Forgotten your password?". */
+button.link {
+  background: none;
+  border: none;
+  color: var(--info);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 400;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  text-decoration: underline;
+}
+
+button.link:hover { color: #93c5fd; }
+
+.result a { color: var(--info); }
+
 header {
   display: flex;
   align-items: center;

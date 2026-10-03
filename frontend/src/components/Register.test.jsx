@@ -4,7 +4,7 @@
  * answer instead of a round trip.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("../api", async (importOriginal) => {
@@ -36,11 +36,84 @@ describe("Register", () => {
     await user.type(within(form).getByLabelText(/password/i), "correct-horse");
     await user.click(within(form).getByRole("button", { name: /register/i }));
 
-    await waitFor(() => expect(onRegistered).toHaveBeenCalledWith("alice"));
+    await waitFor(() => expect(onRegistered).toHaveBeenCalledWith("alice", false));
     expect(api.post).toHaveBeenCalledWith("/auth/register", {
       username: "alice",
       password: "correct-horse",
     });
+  });
+
+  it("sends an email when one is given, and reports it upward", async () => {
+    const onRegistered = vi.fn();
+    const user = userEvent.setup();
+
+    render(<Register onRegistered={onRegistered} />);
+    const form = registerForm();
+    await user.type(within(form).getByLabelText(/username/i), "bob");
+    await user.type(within(form).getByLabelText(/email/i), "bob@example.com");
+    await user.type(within(form).getByLabelText(/password/i), "correct-horse");
+    await user.click(within(form).getByRole("button", { name: /register/i }));
+
+    await waitFor(() => expect(onRegistered).toHaveBeenCalledWith("bob", true));
+    expect(api.post).toHaveBeenCalledWith("/auth/register", {
+      username: "bob",
+      password: "correct-horse",
+      email: "bob@example.com",
+    });
+  });
+
+  it("rejects a malformed email before sending", async () => {
+    const user = userEvent.setup();
+
+    render(<Register onRegistered={vi.fn()} />);
+    const form = registerForm();
+    await user.type(within(form).getByLabelText(/username/i), "carol");
+    await user.type(within(form).getByLabelText(/password/i), "correct-horse");
+
+    // type="email" makes userEvent refuse to type junk, and the browser's own
+    // constraint validation would block submit before React ever runs. Set the
+    // value directly and submit, to exercise our guard specifically.
+    const email = within(form).getByLabelText(/email/i);
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(
+      email,
+      "not-an-email"
+    );
+    email.dispatchEvent(new Event("input", { bubbles: true }));
+
+    fireEvent.submit(form);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/valid email/i);
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
+  it("omits the email field entirely when blank", async () => {
+    // Sending email: null would not be the same as "not supplied".
+    const user = userEvent.setup();
+
+    render(<Register onRegistered={vi.fn()} />);
+    const form = registerForm();
+    await user.type(within(form).getByLabelText(/username/i), "dave");
+    await user.type(within(form).getByLabelText(/password/i), "correct-horse");
+    await user.click(within(form).getByRole("button", { name: /register/i }));
+
+    await waitFor(() => expect(api.post).toHaveBeenCalled());
+    expect(api.post.mock.calls[0][1]).not.toHaveProperty("email");
+  });
+
+  it("surfaces an email-already-registered conflict", async () => {
+    api.post.mockRejectedValue({
+      response: { status: 409, data: { msg: "Email already registered" } },
+    });
+    const user = userEvent.setup();
+
+    render(<Register onRegistered={vi.fn()} />);
+    const form = registerForm();
+    await user.type(within(form).getByLabelText(/username/i), "erin");
+    await user.type(within(form).getByLabelText(/email/i), "erin@example.com");
+    await user.type(within(form).getByLabelText(/password/i), "correct-horse");
+    await user.click(within(form).getByRole("button", { name: /register/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/already registered/i);
   });
 
   it("rejects a password under eight characters", async () => {

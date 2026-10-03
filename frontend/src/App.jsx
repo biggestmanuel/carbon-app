@@ -1,6 +1,8 @@
-import React, { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Login from "./components/Login.jsx";
 import Register from "./components/Register.jsx";
+import ForgotPassword from "./components/ForgotPassword.jsx";
+import ResetPassword from "./components/ResetPassword.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import { api, fetchSession, setSessionExpiredHandler } from "./api";
 
@@ -12,6 +14,13 @@ function App() {
   const [checking, setChecking] = useState(true);
   const [sessionError, setSessionError] = useState("");
   const [info, setInfo] = useState("");
+  // "login" shows register + login; "forgot" swaps in the reset request form.
+  const [mode, setMode] = useState("login");
+
+  // Read once at mount: an emailed link arrives with ?token=...
+  const [onResetPage] = useState(
+    () => new URLSearchParams(window.location.search).has("token")
+  );
 
   const handleLogout = useCallback(async () => {
     try {
@@ -53,6 +62,17 @@ function App() {
     return () => setSessionExpiredHandler(null);
   }, []);
 
+  // A link from an email lands on /reset-password?token=...; show that form
+  // regardless of session state, since the user is not logged in here.
+  if (onResetPage) {
+    return (
+      <main className="app">
+        <h1>Carbon Footprint App</h1>
+        <ResetPassword />
+      </main>
+    );
+  }
+
   if (checking) {
     return (
       <main className="app">
@@ -74,21 +94,42 @@ function App() {
         )}
         {info && <p className="info">{info}</p>}
 
-        <div className="columns">
-          <Register
-            onRegistered={(name) => {
-              setSessionError("");
-              setInfo(`Account "${name}" created. You can log in now.`);
-            }}
-          />
-          <Login
-            onAuthenticated={(name) => {
-              setInfo("");
-              setSessionError("");
-              setUsername(name);
-            }}
-          />
-        </div>
+        {mode === "forgot" ? (
+          <ForgotPassword onBack={() => setMode("login")} />
+        ) : (
+          <div className="columns">
+            <Register
+              onRegistered={(name, hasEmail) => {
+                setSessionError("");
+                setInfo(
+                  hasEmail
+                    ? `Account "${name}" created. You can log in now.`
+                    : `Account "${name}" created. Add an email next time if you want to reset your password.`
+                );
+              }}
+            />
+            <div>
+              <Login
+                onAuthenticated={(name) => {
+                  setInfo("");
+                  setSessionError("");
+                  setUsername(name);
+                }}
+              />
+              <button
+                type="button"
+                className="link"
+                onClick={() => {
+                  setInfo("");
+                  setSessionError("");
+                  setMode("forgot");
+                }}
+              >
+                Forgotten your password?
+              </button>
+            </div>
+          </div>
+        )}
       </main>
     );
   }

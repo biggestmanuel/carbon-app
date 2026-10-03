@@ -1,41 +1,9 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, errorMessage } from "../api";
-
-const FIELDS = [
-  { key: "carKm", label: "Car km", apiKey: "car_km", breakdownKey: "car", unit: "km", step: "0.1" },
-  { key: "electricity", label: "Electricity", apiKey: "electricity_kwh", breakdownKey: "electricity", unit: "kWh", step: "0.1" },
-  { key: "meatMeals", label: "Meat meals", apiKey: "meat_meals", breakdownKey: "meat", unit: "meals", step: "1" },
-  { key: "plantMeals", label: "Plant meals", apiKey: "plant_meals", breakdownKey: "plant", unit: "meals", step: "1" },
-];
-
-const EMPTY = { carKm: "", electricity: "", meatMeals: "", plantMeals: "" };
-
-/**
- * Turn a form string into a number the backend will accept.
- *
- * The old version called parseFloat directly, so an empty field became NaN,
- * which axios serialised to `null` and the backend rejected with the
- * unhelpful "All fields must be numbers".
- */
-export function parseField(field, raw) {
-  const trimmed = String(raw).trim();
-  if (trimmed === "") return { value: 0 }; // blank means "none this period"
-
-  const value = Number(trimmed);
-  if (!Number.isFinite(value)) {
-    return { error: `${field.label} must be a number.` };
-  }
-  if (value < 0) {
-    return { error: `${field.label} cannot be negative.` };
-  }
-  if (field.step === "1" && !Number.isInteger(value)) {
-    return { error: `${field.label} must be a whole number.` };
-  }
-  return { value };
-}
+import { buildPayload, EMPTY_VALUES, factorsForRegion, FIELDS } from "../lib/footprint";
 
 function FootprintForm({ onSaved }) {
-  const [values, setValues] = useState(EMPTY);
+  const [values, setValues] = useState(EMPTY_VALUES);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -43,6 +11,9 @@ function FootprintForm({ onSaved }) {
   // Factors come from the backend so grid intensity is never hardcoded here.
   const [catalogue, setCatalogue] = useState(null);
   const [region, setRegion] = useState("world");
+  // Where the driving happened, when that differs from the home grid. Empty
+  // means "same as home".
+  const [travelRegion, setTravelRegion] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -72,21 +43,18 @@ function FootprintForm({ onSaved }) {
     setError("");
     setResult(null);
 
-    const payload = { region };
-    for (const field of FIELDS) {
-      const { value, error: fieldError } = parseField(field, values[field.key]);
-      if (fieldError) {
-        setError(fieldError);
-        return;
-      }
-      payload[field.apiKey] = value;
+    // Validate before sending. A blank field is zero, never NaN.
+    const { payload, error: payloadError } = buildPayload(values, region, travelRegion);
+    if (payloadError) {
+      setError(payloadError);
+      return;
     }
 
     setSubmitting(true);
     try {
       const res = await api.post("/footprint/calculate", payload);
       setResult(res.data);
-      setValues(EMPTY);
+      setValues(EMPTY_VALUES);
       onSaved?.(res.data);
     } catch (err) {
       setError(errorMessage(err, "Could not calculate the footprint."));
@@ -95,48 +63,54 @@ function FootprintForm({ onSaved }) {
     }
   };
 
-  // Per-unit factors for the currently selected region, once known. Guard the
-  // lookup on the array existing: a malformed or partial /factors response must
-  // not throw while rendering the form.
   const regions = Array.isArray(catalogue?.regions) ? catalogue.regions : [];
-  const activeFactors = catalogue
-    ? {
-        car: 0.21,
-        electricity:
-          regions.find((r) => r.code === region)?.electricity_kwh ?? 0,
-        meat: 5.0,
-        plant: 2.0,
-      }
-    : null;
+  const activeFactors = factorsForRegion(catalogue, region);
 
   return (
     <form className="card" onSubmit={handleSubmit}>
       <h2>Log your footprint</h2>
       <p className="hint">Leave a field blank to count it as zero.</p>
 
-      <div className="field">
-        <label htmlFor="fp-region">Your grid region</label>
-        <select
-          id="fp-region"
-          value={region}
-          onChange={(e) => setRegion(e.target.value)}
-          disabled={!catalogue}
-        >
-          {(regions.length > 0
-            ? regions
-            : [{ code: "world", label: "World average" }]
-          ).map((r) => (
-            <option key={r.code} value={r.code}>
-              {r.label}
-            </option>
-          ))}
-        </select>
-        <small>Electricity emissions depend on how dirty the local grid is.</small>
+      <div className="grid">
+        <div className="field">
+          <label htmlFor="fp-region">Your grid region</label>
+          <select
+            id="fp-region"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            disabled={!catalogue}
+          >
+            {(regions.length > 0 ? regions : [{ code: "world", label: "World average" }]).map((r) => (
+              <option key={r.code} value={r.code}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+          <small>Electricity emissions depend on how dirty the local grid is.</small>
+        </div>
+
+        <div className="field">
+          <label htmlFor="fp-travel-region">Drove somewhere else?</label>
+          <select
+            id="fp-travel-region"
+            value={travelRegion}
+            onChange={(e) => setTravelRegion(e.target.value)}
+            disabled={!catalogue}
+          >
+            <option value="">Same as home</option>
+            {regions.map((r) => (
+              <option key={r.code} value={r.code}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+          <small>Only affects driving, which burns fuel rather than grid power.</small>
+        </div>
       </div>
 
       <div className="grid">
         {FIELDS.map((field) => {
-          const factor = activeFactors?.[field.breakdownKey];
+          const factor = activeFactors[field.breakdownKey];
           return (
             <div key={field.key} className="field">
               <label htmlFor={`fp-${field.key}`}>
@@ -153,9 +127,7 @@ function FootprintForm({ onSaved }) {
                 value={values[field.key]}
                 onChange={handleChange(field.key)}
               />
-              {factor !== undefined && (
-                <small>{factor} kg CO₂e per {field.unit.replace(/s$/, "")}</small>
-              )}
+              <small>{factor} kg CO₂e per {field.unit.replace(/s$/, "")}</small>
             </div>
           );
         })}
@@ -181,6 +153,11 @@ function FootprintForm({ onSaved }) {
               </li>
             ))}
           </ul>
+          {result.travel_region && result.travel_region !== result.region && (
+            <p className="hint">
+              Driving scored using the {result.travel_region} fuel mix.
+            </p>
+          )}
           {catalogue && result.factors_version !== catalogue.factors_version && (
             <p className="hint">
               Calculated with factor set v{result.factors_version}; the current set is v

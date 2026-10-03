@@ -22,7 +22,8 @@ vi.mock("../api", async (importOriginal) => {
 });
 
 import { api } from "../api";
-import FootprintForm, { parseField } from "../components/FootprintForm.jsx";
+import FootprintForm from "../components/FootprintForm.jsx";
+import { buildPayload, factorsForRegion, parseField } from "../lib/footprint";
 
 const FACTORS = {
   default_region: "world",
@@ -53,6 +54,32 @@ beforeEach(() => {
       region: "world",
       factors_version: 2,
     },
+  });
+});
+
+describe("buildPayload", () => {
+  const blank = { carKm: "", electricity: "", meatMeals: "", plantMeals: "" };
+
+  it("always includes the region", () => {
+    expect(buildPayload(blank, "fr").payload.region).toBe("fr");
+  });
+
+  it("reports the first invalid field instead of sending it", () => {
+    const out = buildPayload({ ...blank, carKm: "-5" }, "world");
+    expect(out.payload).toBeUndefined();
+    expect(out.error).toMatch(/cannot be negative/i);
+  });
+});
+
+describe("factorsForRegion", () => {
+  it("uses the selected region's electricity factor", () => {
+    expect(factorsForRegion(FACTORS, "in").electricity).toBe(0.713);
+    expect(factorsForRegion(FACTORS, "fr").electricity).toBe(0.056);
+  });
+
+  it("falls back rather than throwing on a missing catalogue", () => {
+    expect(factorsForRegion(null, "world").electricity).toBeGreaterThan(0);
+    expect(factorsForRegion({}, "zz").electricity).toBeGreaterThan(0);
   });
 });
 
