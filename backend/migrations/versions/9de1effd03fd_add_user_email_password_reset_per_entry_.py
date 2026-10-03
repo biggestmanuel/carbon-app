@@ -34,7 +34,9 @@ def upgrade():
         batch_op.add_column(sa.Column("password_reset_token_hash", sa.String(length=64), nullable=True))
         batch_op.add_column(sa.Column("password_reset_sent_at", sa.DateTime(timezone=True), nullable=True))
 
-    op.execute("UPDATE user SET updated_at = created_at WHERE updated_at IS NULL")
+    # "user" is a reserved word in Postgres, so the identifier must be quoted.
+    # SQLite accepts the same double-quoted form.
+    op.execute('UPDATE "user" SET updated_at = created_at WHERE updated_at IS NULL')
 
     with op.batch_alter_table("user", schema=None) as batch_op:
         batch_op.alter_column(

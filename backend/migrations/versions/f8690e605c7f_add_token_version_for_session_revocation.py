@@ -22,7 +22,8 @@ def upgrade():
     with op.batch_alter_table("user", schema=None) as batch_op:
         batch_op.add_column(sa.Column("token_version", sa.Integer(), nullable=True))
 
-    op.execute("UPDATE user SET token_version = 1 WHERE token_version IS NULL")
+    # "user" is a reserved word in Postgres, so the identifier must be quoted.
+    op.execute('UPDATE "user" SET token_version = 1 WHERE token_version IS NULL')
 
     with op.batch_alter_table("user", schema=None) as batch_op:
         batch_op.alter_column(

@@ -46,7 +46,11 @@ def upgrade():
             sa.Column("email_verification_sent_at", sa.DateTime(timezone=True), nullable=True)
         )
 
-    op.execute("UPDATE user SET email_verified = 0 WHERE email_verified IS NULL")
+    # "user" is a reserved word in Postgres, so the identifier must be quoted.
+    #
+    # false, not 0: SQLite silently coerces 0 to FALSE, Postgres rejects an
+    # integer for a boolean column outright. The keyword works on both.
+    op.execute('UPDATE "user" SET email_verified = false WHERE email_verified IS NULL')
 
     with op.batch_alter_table("user", schema=None) as batch_op:
         batch_op.alter_column(
