@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Carbon App — Auth &amp; password reset preview</title>
+<style>
+  :root{--bg:#0f1216;--panel:#181c22;--border:#2a3038;--text:#e6e9ee;--muted:#9aa4b2;--accent:#4ade80;--danger:#f87171;--info:#60a5fa;color-scheme:dark}
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .app{max-width:1080px;margin:0 auto;padding:2rem 1.25rem 4rem}
+  h1{margin:0 0 .25rem;font-size:1.6rem}
+  h2{margin:0 0 .75rem;font-size:1.1rem}
+  .hint{color:var(--muted);margin:0 0 1rem;font-size:.875rem}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;margin-bottom:1rem;padding:1.25rem}
+  .columns{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));align-items:start;gap:1rem;display:grid}
+  label{color:var(--muted);font-size:.85rem}
+  form.card label{margin:.6rem 0 .2rem;display:block}
+  input{border:1px solid var(--border);color:var(--text);font:inherit;background:#10141a;border-radius:6px;width:100%;padding:.5rem .6rem}
+  button{background:var(--accent);color:#06210f;cursor:pointer;font:inherit;border:none;border-radius:6px;margin-top:1rem;padding:.55rem 1rem;font-weight:600}
+  button.secondary{border:1px solid var(--border);color:var(--text);background:transparent;margin-top:.5rem}
+  button.link{color:var(--info);cursor:pointer;font:inherit;background:none;border:none;margin:.5rem 0 0;padding:0;font-weight:400;text-decoration:underline}
+  .info{color:var(--info)}
+  .error{color:var(--danger)}
+  .banner{max-width:1080px;margin:0 auto;padding:1rem 1.25rem 0}
+  .banner p{background:#1a1418;border:1px solid #4a2530;border-radius:8px;color:var(--muted);
+            padding:.6rem .9rem;margin:0;font-size:.8rem}
+  .result{background:#10231a;border:1px solid #1f5136;border-radius:8px;margin-top:1rem;padding:.75rem 1rem}
+  .result strong{color:var(--accent)}
+  .result a{color:var(--info)}
+  .col-label{color:var(--muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;margin:0 0 .35rem}
+  hr{border:0;border-top:1px solid var(--border);margin:2rem 0}
+</style>
+</head>
+<body>
+
+<div class="banner">
+  <p>Capture of the logged-out screens. <code>preview.html</code> shows the dashboard.
+  React is not executing here, so these are rendered snapshots.</p>
+</div>
+
+<main class="app">
+  <h1>Carbon Footprint App</h1>
+  <p class="hint">Track the emissions from your travel, energy and meals.</p>
+  <p class="info">Account "previewuser" created. You can log in now.</p>
+
+  <div class="columns">
+    <div>
+      <p class="col-label">Register — new email field added</p>
+      <form class="card">
+        <h2>Create account</h2>
+        <label>Username</label>
+        <input value="">
+        <label>Email (optional)</label>
+        <input value="">
+        <p class="hint">Needed only if you want to reset a forgotten password.</p>
+        <label>Password</label>
+        <input type="password" value="">
+        <button type="submit">Register</button>
+      </form>
+    </div>
+
+    <div>
+      <p class="col-label">Login — reset link added below</p>
+      <form class="card">
+        <h2>Log in</h2>
+        <label>Username</label>
+        <input value="">
+        <label>Password</label>
+        <input type="password" value="">
+        <button type="submit">Log in</button>
+        <button type="button" class="link">Forgotten your password?</button>
+      </form>
+
+      <hr>
+
+      <p class="col-label">Forgot password</p>
+      <form class="card">
+        <h2>Reset your password</h2>
+        <label>Email</label>
+        <input type="email" value="">
+        <button type="submit">Send reset link</button>
+        <button type="button" class="secondary">Back to log in</button>
+      </form>
+
+      <p class="col-label">Sent — identical wording whether or not the account exists</p>
+      <div class="card">
+        <h2>Check your email</h2>
+        <p class="hint">If that address has an account, a reset link is on its way.</p>
+        <div class="result">
+          <strong>Development mode</strong>
+          <p class="hint">Email delivery is off, so the link was written to the server log:</p>
+          <a href="#">Open the reset link</a>
+        </div>
+        <button type="button" class="secondary">Back to log in</button>
+      </div>
+
+      <p class="col-label">Reset — reached from the emailed link</p>
+      <form class="card">
+        <h2>Choose a new password</h2>
+        <label>Choose password</label>
+        <input type="password" value="">
+        <label>Confirm new password</label>
+        <input type="password" value="">
+        <button type="submit">Update password</button>
+      </form>
+
+      <p class="col-label">Invalid link — same message for wrong, used and expired</p>
+      <div class="card">
+        <h2>Choose a new password</h2>
+        <p class="error" role="alert">This reset link is invalid or has expired.</p>
+      </div>
+    </div>
+  </div>
+</main>
+
+</body>
+</html>

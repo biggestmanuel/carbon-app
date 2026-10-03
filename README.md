@@ -22,15 +22,21 @@ backend/
   factors.py        region-aware emission factor data
   models.py         User, Footprint
   routes/
-    auth.py         /auth/register, /auth/login, /auth/refresh, /auth/logout, /auth/me
-    footprint.py    /footprint/calculate, /footprint/history, /footprint/summary, /footprint/factors
+    auth.py         register, login, refresh, logout, me, forgot-password, reset-password
+    footprint.py    calculate, history, summary, factors
+  passwords.py      single-use reset tokens, stored hashed
+  mail.py           pluggable mailer: console in dev, SMTP in production
   migrations/       Alembic history; `flask db upgrade` owns the schema
   tests/            pytest suite
 frontend/
   src/
     api.js          axios instance, withCredentials, transparent token refresh, 401 handling
+    lib/footprint.js  field definitions, input parsing, factor lookup (pure, unit-tested)
     App.jsx         session state, token verification, expiry handling
-    components/     Login, Register, Dashboard, FootprintForm, Summary, HistoryList
+    components/     Login, Register, ForgotPassword, ResetPassword, Dashboard,
+                    FootprintForm, Summary, HistoryList
+  preview.html        static capture of the dashboard UI
+  preview-auth.html   static capture of the logged-out and reset screens
 ```
 
 ## Running it
@@ -109,6 +115,8 @@ payloads cannot read them. Nothing is stored in `localStorage`.
 - On a `401`, the frontend tries one refresh and replays the request, so the
   30 minute access lifetime is not a hard sign-out. If the refresh also fails,
   the app logs out cleanly rather than stranding the user on a dead dashboard.
+- A password change invalidates every existing session via the `token_version`
+  claim described under Password reset.
 - `JWT_COOKIE_CSRF_PROTECT` is off because every state-changing request is a JSON
   POST from an allowlisted origin, which a cross-site form cannot forge and a
   cross-origin fetch cannot pass CORS preflight for. Turn it on if the API is
@@ -136,11 +144,13 @@ All `/footprint/*` routes except `/footprint/factors` require a session cookie.
 
 | Method | Path                     | Purpose                                  |
 | ------ | ------------------------ | ---------------------------------------- |
-| POST   | `/auth/register`         | Create an account                        |
+| POST   | `/auth/register`         | Create an account; `email` optional      |
 | POST   | `/auth/login`            | Sets cookies, returns `username`         |
 | POST   | `/auth/refresh`          | New access cookie from the refresh cookie|
 | POST   | `/auth/logout`           | Clears cookies                           |
-| GET    | `/auth/me`               | Confirm a session and return the user    |
+| GET    | `/auth/me`               | Confirm a session; email is masked       |
+| POST   | `/auth/forgot-password`  | Email a reset link; never reveals whether the address exists |
+| POST   | `/auth/reset-password`   | Consume a token and set a new password   |
 | POST   | `/footprint/calculate`   | Validate, calculate and store an entry   |
 | GET    | `/footprint/history`     | Stored entries, newest first, paged      |
 | GET    | `/footprint/summary`     | Lifetime totals per category and region  |
@@ -159,12 +169,37 @@ cap, fractional meal counts, and unknown regions. Every bad field is reported at
 }
 ```
 
+## Password reset
+
+`POST /auth/forgot-password` emails a single-use token that expires after
+`PASSWORD_RESET_TTL_MINUTES`. Three properties matter:
+
+- **It never reveals whether an address exists.** The response is identical for a
+  known address, an unknown one and a malformed one, so the endpoint is not a
+  user-enumeration oracle.
+- **Tokens are stored hashed**, so a database leak hands over no working links.
+- **Resetting revokes live sessions.** Each token carries a `token_version` claim
+  checked on every request; changing the password bumps the stored version, so a
+  refresh cookie captured beforehand stops working on its next use rather than
+  lasting out its lifetime.
+
+Email is off by default. With `MAIL_ENABLED=false` the link is returned in the
+response as `dev_token` and also written to the log, so the flow is usable locally
+with no mail account. `Config.validate()` rejects `MAIL_ENABLED` set without
+`MAIL_HOST`, and the reverse, because either mistake means reset emails silently
+go nowhere. Email is not verified, and an address is not required to register.
+
 ## Emission factors
 
 Defined in `backend/factors.py` and served by `/footprint/factors`, so the UI never
-hardcodes them. The region is recorded on every entry alongside the factor version,
-which means a future factor update can be detected against historical rows instead
-of silently changing what they mean.
+hardcodes them. Every entry records its region, its travel region and a **snapshot
+of the exact factors used**. That snapshot is what keeps history stable: when the
+factor table is updated, old entries keep scoring the way they originally did,
+instead of being silently reinterpreted.
+
+`travel_region` exists because the two do not always match. A UK resident driving
+in France pays the UK grid factor for electricity but a different fuel mix for the
+driving. It defaults to the home region when omitted.
 
 | Activity    | Factor                       |
 | ----------- | ---------------------------- |
@@ -178,18 +213,19 @@ the same 200 kWh costs ~11 kg CO₂e in France and ~143 kg in India. Diet factor
 are Poore & Nemecek (2018) global medians, shared across regions because the study
 does not break them down reliably per country.
 
-`/footprint/summary` recomputes the per-category split using **each entry's own
-stored region**, so mixed-region histories are reported correctly.
+`/footprint/summary` recomputes the per-category split from each entry's stored
+factor snapshot, so mixed-region histories are reported correctly.
 
 ## Tests
 
 ```bash
 cd backend
-python -m pytest tests -q        # 108 tests
+python -m pytest tests -q        # 163 tests
 ruff check .                    # lint
 
 cd frontend
-npm test                        # 66 tests
+npm test                        # 86 tests
+npm run lint
 npm run build
 ```
 
@@ -219,12 +255,21 @@ breaks once deployed.
 
 - **Emission factors are static reference values.** Grid mixes shift over time and
   are not region-specific below the country level. Wire in a live data source such
-  as Electricity Maps if that precision matters.
-- **No email verification or password reset.** Accounts are username-only.
-- **No rate-limit-aware proxy config in dev.** The in-memory store resets on restart.
-- **Single-region-per-entry.** An entry is scored entirely with one grid factor,
-  which is a simplification for people who travel or split time across grids.
-- **No frontend lint or type checking.** The suite catches behaviour, not style. Add
-  ESLint if the codebase grows.
-- **CI runs migrations but not a real deployment.** A green pipeline proves the
-  schema applies to a fresh SQLite file, not to a production database with data.
+  as Electricity Maps if that precision matters. The factor snapshot on each entry
+  means such an update will not rewrite history.
+- **Email addresses are not verified.** A user can register someone else's address,
+  which means a reset link could in principle reach the wrong inbox. Full fix is a
+  confirmation step before the address is trusted.
+- **Diet factors are global medians, not per-country.** Car factors are a single
+  global average, so fuel mix differences between countries are not modelled.
+- **No account deletion or data export.** There is no way for a user to erase their
+  history or take it elsewhere.
+- **Rate-limit storage defaults to memory://**, which resets on restart and is not
+  shared between workers. Set `RATELIMIT_STORAGE_URI` to Redis before running more
+  than one process, or the effective limit multiplies by worker count.
+- **Sessions are not revocable per device.** A password change kills every session,
+  but there is no "log out everywhere" or per-device list.
+- **No TypeScript or type checking.** ESLint and 86 tests cover behaviour, but
+  nothing checks the shapes crossing the API boundary at compile time.
+- **CI runs migrations against SQLite only.** A green pipeline proves the schema
+  applies to an empty database, not that it will apply cleanly to production data.
