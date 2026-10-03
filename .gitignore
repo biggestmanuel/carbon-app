@@ -5,14 +5,19 @@ __pycache__/
 venv/
 env/
 .venv/
+.pytest_cache/
 *.db
 *.sqlite3
 instance/
 .env
 
+# Flask-Migrate runtime scratch
+.mypy_cache/
+
 # --- Node / React (frontend) ---
 node_modules/
-frontend/build/
+frontend/dist/
+frontend/.vite/
 frontend/.env
 frontend/.env.local
 frontend/.env.development.local
