@@ -2,6 +2,8 @@ import math
 
 from flask import current_app
 
+from factors import DEFAULT_REGION, factors_for
+
 
 # --- Registration ---------------------------------------------------------
 def test_register_returns_201(client):
@@ -133,8 +135,18 @@ def test_calculate_requires_auth(client, valid_payload):
 def test_calculate_total_and_breakdown(logged_in, valid_payload):
     res = logged_in.post("/footprint/calculate", json=valid_payload)
     assert res.status_code == 201
-    factors = 0.21 * 100 + 0.475 * 200 + 5.0 * 3 + 2.0 * 5
-    assert math.isclose(res.json["total"], factors, rel_tol=1e-6)
+
+    # Derived from the factor table rather than written out. A hardcoded factor
+    # breaks on every legitimate factor update, which trains you to update the
+    # number without ever checking whether the new one is right.
+    factors = factors_for(DEFAULT_REGION)
+    expected = (
+        valid_payload["car_km"] * factors["car_km"]
+        + valid_payload["electricity_kwh"] * factors["electricity_kwh"]
+        + valid_payload["meat_meals"] * factors["meat_meal"]
+        + valid_payload["plant_meals"] * factors["plant_meal"]
+    )
+    assert math.isclose(res.json["total"], expected, rel_tol=1e-6)
     breakdown = res.json["breakdown"]
     assert math.isclose(sum(breakdown.values()), res.json["total"], rel_tol=1e-6)
     assert set(breakdown) == {"car", "electricity", "meat", "plant"}

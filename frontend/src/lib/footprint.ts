@@ -13,6 +13,12 @@ export type FormValues = Record<FieldSpec["key"], string>;
 
 export interface CalculatePayload {
   region: string;
+  /**
+   * Where the driving happened, when that differs from the home grid. Omitted
+   * when blank so the backend applies its own "same as home" default; sending ""
+   * would make it look up a region literally named "".
+   */
+  travel_region?: string;
   car_km: number;
   electricity_kwh: number;
   meat_meals: number;
@@ -25,6 +31,15 @@ export interface FactorLookup {
   meat: number;
   plant: number;
 }
+
+/** The slice of the factor catalogue these helpers need. */
+type RegionCatalogue = {
+  regions?: readonly {
+    code: string;
+    electricity_kwh: number;
+    car_km?: number;
+  }[];
+};
 
 export const FIELDS: readonly FieldSpec[] = [
   {
@@ -119,14 +134,18 @@ export function parseField(field: FieldSpec, raw: string | number): ParseResult 
 /**
  * Build the request body, or return the first validation error found.
  *
- * There is deliberately no travelRegion parameter. The backend still accepts
- * `travel_region`, but car emissions use a single global factor, so the value
- * cannot change any total -- and a control that silently does nothing is worse
- * than no control. See the pinned test in the backend suite.
+ * travelRegion is where the driving happened, which can differ from the home
+ * grid. It is omitted when blank so the backend applies its own "same as home"
+ * default rather than being handed an empty string to look up.
+ *
+ * Car factors are region-keyed, so this genuinely changes the total. Only some
+ * regions have a measured figure of their own, which is why the component only
+ * offers the ones that differ from the global default.
  */
 export function buildPayload(
   values: FormValues,
-  region: string
+  region: string,
+  travelRegion = ""
 ): { payload?: CalculatePayload; error?: string } {
   const parsed: Partial<Record<FieldSpec["apiKey"], number>> = {};
 
@@ -145,19 +164,22 @@ export function buildPayload(
     meat_meals: parsed.meat_meals ?? 0,
     plant_meals: parsed.plant_meals ?? 0,
   };
+  if (travelRegion) payload.travel_region = travelRegion;
 
   return { payload };
 }
 
 /** Display factors for the selected region, tolerating a missing catalogue. */
 export function factorsForRegion(
-  catalogue: { regions?: readonly { code: string; electricity_kwh: number }[] } | null,
+  catalogue: RegionCatalogue | null,
   region: string
 ): FactorLookup {
   const regions = Array.isArray(catalogue?.regions) ? catalogue.regions : [];
   const selected = regions.find((r) => r.code === region);
   return {
-    car: FALLBACK_FACTORS.car,
+    // The car's factor is region-keyed now, so it comes from the catalogue rather
+    // than a local constant. Falls back if an older backend omits it.
+    car: selected?.car_km ?? FALLBACK_FACTORS.car,
     electricity: selected?.electricity_kwh ?? FALLBACK_FACTORS.electricity,
     meat: FALLBACK_FACTORS.meat,
     plant: FALLBACK_FACTORS.plant,

@@ -4,7 +4,7 @@ import math
 
 from flask import current_app
 
-from factors import factors_for
+from factors import DEFAULT_REGION, factors_for
 from models import Footprint, User
 
 
@@ -79,8 +79,15 @@ def test_regression_summary_aggregates(client, auth_headers, valid_payload):
 
     body = client.get("/footprint/summary").json
     assert body["entries"] == 2
-    # world electricity factor is 0.475; see factors.py
-    expected = 100 * 0.21 + 200 * 0.475 + 3 * 5.0 + 5 * 2.0
+    # Read from the factor table rather than hardcoded, so a factor update does
+    # not read as a regression.
+    factors = factors_for(DEFAULT_REGION)
+    expected = (
+        valid_payload["car_km"] * factors["car_km"]
+        + valid_payload["electricity_kwh"] * factors["electricity_kwh"]
+        + valid_payload["meat_meals"] * factors["meat_meal"]
+        + valid_payload["plant_meals"] * factors["plant_meal"]
+    )
     assert math.isclose(body["total"], expected * 2, rel_tol=1e-6)
 
 

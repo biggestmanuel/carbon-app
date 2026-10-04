@@ -10,7 +10,20 @@ interface FootprintFormProps {
 
 /** Shown until /factors resolves, so the labels are never blank. */
 const PLACEHOLDER_REGIONS: RegionOption[] = [
-  { code: "world", label: "World average", electricity_kwh: 0.475 },
+  {
+    code: "world",
+    label: "World average",
+    electricity_kwh: 0.475,
+    car_km: 0.16984,
+    car_km_is_default: true,
+    provenance: {
+      electricity_kwh: { source: "", basis: "", year: null },
+      car_km: { source: "", basis: "", year: null },
+      car_km_is_default: true,
+      meat_meal: { source: "", basis: "", year: null },
+      plant_meal: { source: "", basis: "", year: null },
+    },
+  },
 ];
 
 function FootprintForm({ onSaved }: FootprintFormProps) {
@@ -22,6 +35,9 @@ function FootprintForm({ onSaved }: FootprintFormProps) {
   // Factors come from the backend so grid intensity is never hardcoded here.
   const [catalogue, setCatalogue] = useState<FactorsCatalogue | null>(null);
   const [region, setRegion] = useState("world");
+  // Where the driving happened, when that differs from the home grid. Empty
+  // means "same as home".
+  const [travelRegion, setTravelRegion] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -54,7 +70,7 @@ function FootprintForm({ onSaved }: FootprintFormProps) {
     setResult(null);
 
     // Validate before sending. A blank field is zero, never NaN.
-    const { payload, error: payloadError } = buildPayload(values, region);
+    const { payload, error: payloadError } = buildPayload(values, region, travelRegion);
     if (payloadError !== undefined || payload === undefined) {
       setError(payloadError ?? "Could not read the form.");
       return;
@@ -76,6 +92,17 @@ function FootprintForm({ onSaved }: FootprintFormProps) {
   // Guard the shape: a partial or unexpected payload must not throw here.
   const regions = Array.isArray(catalogue?.regions) ? catalogue.regions : [];
   const activeFactors = factorsForRegion(catalogue, region);
+
+  // Only offer travel regions whose car factor actually differs from home.
+  //
+  // Most regions have no measured figure of their own and stand in for the
+  // documented global default, so offering them would put a control on screen
+  // that cannot change the number. That was the original bug: the selector was
+  // there, labelled "Only affects driving", and did nothing at all.
+  const homeCarFactor = regions.find((r) => r.code === region)?.car_km;
+  const travelChoices = regions.filter(
+    (r) => r.code !== region && r.car_km !== homeCarFactor
+  );
 
   return (
     <form className="card" onSubmit={handleSubmit}>
@@ -99,6 +126,30 @@ function FootprintForm({ onSaved }: FootprintFormProps) {
           </select>
           <small>Electricity emissions depend on how dirty the local grid is.</small>
         </div>
+
+        {/* Rendered only when it can change the result. See travelChoices. */}
+        {travelChoices.length > 0 && (
+          <div className="field">
+            <label htmlFor="fp-travel-region">Drove somewhere else?</label>
+            <select
+              id="fp-travel-region"
+              value={travelRegion}
+              onChange={(e) => setTravelRegion(e.target.value)}
+              disabled={!catalogue}
+            >
+              <option value="">Same as home</option>
+              {travelChoices.map((r) => (
+                <option key={r.code} value={r.code}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+            <small>
+              Driving is scored per km, and {travelChoices.length === 1 ? "one region has" : `${travelChoices.length} regions have`}{" "}
+              its own measured figure. Elsewhere the global average is used.
+            </small>
+          </div>
+        )}
       </div>
 
       <div className="grid">
@@ -148,6 +199,12 @@ function FootprintForm({ onSaved }: FootprintFormProps) {
               </li>
             ))}
           </ul>
+          {result.travel_region && result.travel_region !== result.region && (
+            <p className="hint">
+              Driving scored at {result.factors_applied.car_km} kg CO₂e per km, the figure for{" "}
+              {result.travel_region}.
+            </p>
+          )}
           {catalogue && result.factors_version !== catalogue.factors_version && (
             <p className="hint">
               Calculated with factor set v{result.factors_version}; the current set is v

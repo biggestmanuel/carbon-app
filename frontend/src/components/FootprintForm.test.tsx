@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { apiMock, resetApiMocks } from "../test/api-mock";
+import { apiMock, makeFactorsCatalogue, resetApiMocks } from "../test/api-mock";
 
 // Mock only the transport so no real request is attempted and the payload can be
 // inspected directly. errorMessage is the real implementation, so the
@@ -21,19 +21,14 @@ vi.mock("../api", async (importOriginal) => {
 });
 
 import FootprintForm from "./FootprintForm";
-import type { FactorsCatalogue } from "../types";
 
-const FACTORS: FactorsCatalogue = {
-  default_region: "world",
-  factors_version: 2,
-  source: "static-reference",
-  regions: [
-    { code: "fr", label: "France", electricity_kwh: 0.056 },
-    { code: "in", label: "India", electricity_kwh: 0.713 },
-    { code: "world", label: "World average", electricity_kwh: 0.475 },
-  ],
-  units: {},
-};
+// The US has its own measured car figure; every other region shares the global
+// default. That makes the travel-region control meaningful for exactly one
+// choice, which is what the form should offer.
+const FACTORS = makeFactorsCatalogue({
+  defaultRegion: "world",
+  carFactors: { us: 0.2485 },
+});
 
 /** Force a value React will accept, including values type=number rejects. */
 function setValue(element: Element, value: string | number) {
@@ -143,25 +138,43 @@ describe("successful submission", () => {
     expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ total: 146 }));
   });
 
-  it("offers no travel-region control, because it could not affect the total", async () => {
+  it("offers only travel regions whose car factor actually differs", async () => {
     render(<FootprintForm onSaved={vi.fn()} />);
 
-    // Car emissions use one global factor, so "Drove somewhere else?" changed
-    // nothing while its hint claimed otherwise. Removed rather than left as a
-    // control that silently does nothing. See backend/tests/test_travel_region.py
+    // The US has its own measured car figure; every other region shares the
+    // global default, so offering them would put an inert control on screen.
+    // That was the original bug.
     await screen.findByLabelText(/grid region/i);
-    expect(document.getElementById("fp-travel-region")).toBeNull();
-    expect(screen.queryByLabelText(/drove somewhere else/i)).toBeNull();
+    const select = document.getElementById("fp-travel-region") as HTMLSelectElement;
+    expect(select).toBeTruthy();
+    expect([...select.options].map((o) => o.value)).toEqual(["", "us"]);
   });
 
-  it("never sends a travel_region in the payload", async () => {
+  it("sends a travel region that changes the car factor", async () => {
     const user = userEvent.setup();
     render(<FootprintForm onSaved={vi.fn()} />);
 
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalled());
     setValue(byId("fp-carKm"), "100");
+    setValue(selectById("fp-travel-region"), "us");
     await user.click(screen.getByRole("button", { name: /^calculate$/i }));
 
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledTimes(1));
+    expect(apiMock.post.mock.calls[0]?.[1]).toMatchObject({
+      region: "world",
+      travel_region: "us",
+      car_km: 100,
+    });
+  });
+
+  it("omits travel_region when it matches home", async () => {
+    const user = userEvent.setup();
+    render(<FootprintForm onSaved={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /^calculate$/i }));
+
+    await waitFor(() => expect(apiMock.post).toHaveBeenCalledTimes(1));
+    // Sending an empty string would make the backend look up a region named "".
     expect(apiMock.post.mock.calls[0]?.[1]).not.toHaveProperty("travel_region");
   });
 
@@ -274,11 +287,9 @@ describe("region selector", () => {
 
     const select = await regionSelect();
     await waitFor(() => expect(select.options).toHaveLength(FACTORS.regions.length));
-    expect([...select.options].map((o) => o.textContent)).toEqual([
-      "France",
-      "India",
-      "World average",
-    ]);
+    expect([...select.options].map((o) => o.value)).toEqual(
+      FACTORS.regions.map((r) => r.code)
+    );
   });
 
   it("defaults to the backend's default region", async () => {

@@ -24,6 +24,8 @@ export interface FootprintEntry {
 /** The exact emission factors used to score one entry. */
 export interface FactorSet {
   car_km: number;
+  /** Recorded per row: a later update may turn a default into a measured value. */
+  car_km_is_default?: boolean;
   electricity_kwh: number;
   meat_meal: number;
   plant_meal: number;
@@ -46,10 +48,32 @@ export interface SummaryResponse {
   factors_versions: number[];
 }
 
+/** Where a factor came from, and what it measures. */
+export interface Provenance {
+  source: string;
+  basis: string;
+  year: number | null;
+}
+
 export interface RegionOption {
   code: string;
   label: string;
   electricity_kwh: number;
+  /** kg CO2e per km for driving in this region. */
+  car_km: number;
+  /**
+   * True when car_km is the documented global stand-in rather than a figure
+   * measured for this region. Surfaced in the UI so a number is never presented
+   * as more specific than it is.
+   */
+  car_km_is_default: boolean;
+  provenance: {
+    electricity_kwh: Provenance;
+    car_km: Provenance;
+    car_km_is_default: boolean;
+    meat_meal: Provenance;
+    plant_meal: Provenance;
+  };
 }
 
 export interface FactorsCatalogue {

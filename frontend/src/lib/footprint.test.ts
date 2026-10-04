@@ -15,22 +15,16 @@ import {
   FALLBACK_FACTORS,
 } from "./footprint";
 import type { FieldSpec } from "./footprint";
-import type { FactorsCatalogue } from "../types";
+import { makeFactorsCatalogue } from "../test/api-mock";
 
 const car = FIELDS.find((f) => f.key === "carKm") as FieldSpec;
 const meals = FIELDS.find((f) => f.key === "meatMeals") as FieldSpec;
 
-const CATALOGUE: FactorsCatalogue = {
-  default_region: "world",
-  factors_version: 2,
-  source: "static-reference",
-  regions: [
-    { code: "fr", label: "France", electricity_kwh: 0.056 },
-    { code: "in", label: "India", electricity_kwh: 0.713 },
-    { code: "world", label: "World average", electricity_kwh: 0.475 },
-  ],
-  units: {},
-};
+// France and India carry their own car figures so the travel-region behaviour is
+// testable; everything else falls back to the shared default.
+const CATALOGUE = makeFactorsCatalogue({
+  carFactors: { fr: 0.15, in: 0.18 },
+});
 
 describe("parseField", () => {
   it("reads a blank as zero, not NaN", () => {
@@ -110,17 +104,28 @@ describe("factorsForRegion", () => {
     expect(factorsForRegion(CATALOGUE, "fr").electricity).toBe(0.056);
   });
 
+  it("uses the selected region's car factor", () => {
+    // Car factors are region-keyed now, so this is not a global constant.
+    expect(factorsForRegion(CATALOGUE, "fr").car).toBe(0.15);
+    expect(factorsForRegion(CATALOGUE, "in").car).toBe(0.18);
+  });
+
   it("falls back rather than throwing on a missing catalogue", () => {
     expect(factorsForRegion(null, "world").electricity).toBe(FALLBACK_FACTORS.electricity);
     expect(factorsForRegion({ regions: [] }, "zz").electricity).toBe(FALLBACK_FACTORS.electricity);
   });
 
-  it("keeps the non-grid factors constant across regions", () => {
-    const fr = factorsForRegion(CATALOGUE, "fr");
-    const inGrid = factorsForRegion(CATALOGUE, "in");
-    expect(fr.car).toBe(inGrid.car);
-    expect(fr.meat).toBe(inGrid.meat);
-    expect(fr.plant).toBe(inGrid.plant);
+  it("falls back for a car factor an older backend omitted", () => {
+    const legacy = { regions: [{ code: "fr", electricity_kwh: 0.056 }] };
+    expect(factorsForRegion(legacy, "fr").car).toBe(FALLBACK_FACTORS.car);
+  });
+
+  it("keeps the diet factors constant across regions", () => {
+    for (const region of ["fr", "in", "us", "world"]) {
+      const lookup = factorsForRegion(CATALOGUE, region);
+      expect(lookup.meat).toBe(FALLBACK_FACTORS.meat);
+      expect(lookup.plant).toBe(FALLBACK_FACTORS.plant);
+    }
   });
 });
 
