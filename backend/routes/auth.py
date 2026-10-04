@@ -4,6 +4,7 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
+    decode_token,
     get_jwt,
     get_jwt_identity,
     jwt_required,
@@ -333,29 +334,66 @@ def reset_password():
 
 
 @auth_bp.route("/logout", methods=["POST"])
-@jwt_required(optional=True)
 def logout():
     """Sign out this device.
 
-    Idempotent: clearing cookies succeeds whether or not a session existed, so
-    the frontend can call it after the session has already lapsed.
+    Deliberately not behind @jwt_required(). That decorator verifies the access
+    token before the view runs, so a request carrying an already-expired cookie
+    came back 401 -- which is exactly when the user most wants to log out. It
+    also left the session row behind forever, because the row is only deleted
+    once a token has been accepted.
+
+    So the token is decoded leniently instead. That is safe here because logout
+    only ever *removes* state, and it removes a row only when the row's user_id
+    matches the identity claim in the same token. A forged or expired token
+    therefore cannot reach another account's sessions.
     """
-    # Remove just this device's row. "Sign out everywhere" is a separate,
-    # explicit action on /account/sessions. get_jwt() raises when no token was
-    # sent at all, and this endpoint must still succeed in that case.
-    try:
-        session_id = get_jwt().get(current_app.config["JWT_SESSION_ID_CLAIM"])
-    except Exception:
-        session_id = None
-    if session_id:
+    identity = _unverified_identity_and_session()
+
+    if identity is not None:
+        user_id, session_id = identity
         session = db.session.get(UserSession, session_id)
-        if session is not None:
+        # Scoped by user_id as well as the id: a token whose sid belongs to
+        # somebody else must not be able to delete it.
+        if session is not None and session.user_id == user_id:
             db.session.delete(session)
             db.session.commit()
 
     response = jsonify({"msg": "Logged out"})
     unset_jwt_cookies(response)
     return response
+
+
+def _unverified_identity_and_session():
+    """(user_id, session_id) from the access cookie, or None.
+
+    allow_expired=True is what makes logout work after the token has lapsed.
+    A token that fails to decode at all -- wrong shape, bad signature, tampered
+    -- yields None, and the route still clears the cookies.
+
+    The cookie name comes from config rather than a literal: set_access_cookies
+    honours JWT_ACCESS_COOKIE_NAME, and a hardcoded string here would silently
+    stop finding the cookie if that were ever changed.
+    """
+    token = request.cookies.get(current_app.config["JWT_ACCESS_COOKIE_NAME"])
+    if not token:
+        return None
+    try:
+        claims = decode_token(token, allow_expired=True)
+    except Exception:
+        # Includes NoAuthorizationError and anything the decoder raises for a
+        # malformed token. Logging out must not depend on the token being good.
+        return None
+
+    try:
+        user_id = int(claims.get("sub"))
+    except (TypeError, ValueError):
+        return None
+
+    session_id = claims.get(current_app.config["JWT_SESSION_ID_CLAIM"])
+    if not session_id:
+        return None
+    return user_id, session_id
 
 
 @auth_bp.route("/me", methods=["GET"])

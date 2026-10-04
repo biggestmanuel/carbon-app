@@ -160,7 +160,7 @@ def revoke_all_sessions():
     if failure:
         return failure
 
-    UserSession.query.filter_by(user_id=user.id).delete()
+    user.revoke_sessions()
     # Bumping the version also invalidates any token issued before this call.
     user.token_version = (user.token_version or 1) + 1
     db.session.commit()
@@ -243,8 +243,9 @@ def delete_account():
         return jsonify({"msg": "Password is incorrect"}), 403
 
     # Clear the session before the row goes, so an in-flight request cannot
-    # observe a half-deleted user.
-    UserSession.query.filter_by(user_id=user.id).delete()
+    # observe a half-deleted user. The relationship cascade would also do this,
+    # but doing it explicitly keeps the intent obvious at the call site.
+    user.revoke_sessions()
     db.session.delete(user)
     try:
         db.session.commit()

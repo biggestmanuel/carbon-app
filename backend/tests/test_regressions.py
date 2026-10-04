@@ -143,3 +143,131 @@ def test_regression_token_never_in_response_body(client):
 
 # --- Bug: create_all() cannot alter a table, so a schema change silently    ---
 # --- left populated databases broken. Covered end-to-end by test_migrations.py.
+
+
+# --- Bug: `sessions` was declared twice on User. The second declaration won,  ---
+# --- and it had passive_deletes=True, the setting that leaves rows behind on  ---
+# --- SQLite because ON DELETE CASCADE is ignored unless foreign_keys is on.  ---
+# --- The endpoint's own test still passed, because delete_account() deletes   ---
+# --- sessions with an explicit bulk query first. These tests delete through   ---
+# --- the ORM alone, which is what any future caller would do.                ---
+def test_regression_no_relationship_is_declared_twice(app):
+    """A duplicate declaration cannot be seen on the mapper.
+
+    SQLAlchemy collapses a repeated `sessions = db.relationship(...)` into a
+    single mapper entry, keeping the last one, so `len(relationships)` is the
+    same either way. The only way to catch it is to read the assignment targets
+    out of the source.
+    """
+    import ast
+    import pathlib
+
+    import models as models_module
+
+    tree = ast.parse(pathlib.Path(models_module.__file__).read_text(encoding="utf-8"))
+
+    seen: dict[tuple[str, str], int] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for stmt in node.body:
+            if not isinstance(stmt, ast.Assign):
+                continue
+            # `name = db.relationship(...)`
+            call = stmt.value
+            if not (
+                isinstance(call, ast.Call)
+                and getattr(call.func, "attr", None) == "relationship"
+            ):
+                continue
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    key = (node.name, target.id)
+                    seen[key] = seen.get(key, 0) + 1
+
+    duplicates = {f"{cls}.{name}": count for (cls, name), count in seen.items() if count > 1}
+    assert not duplicates, (
+        f"relationship(s) declared more than once on the same class: {duplicates}. "
+        "The last declaration silently wins."
+    )
+
+    with app.app_context():
+        assert ("User", "footprints") in seen
+        assert ("User", "sessions") in seen
+
+
+def test_regression_both_relationships_delete_their_children(app):
+    from sqlalchemy import inspect
+
+    with app.app_context():
+        for name in ("footprints", "sessions"):
+            rel = inspect(User).relationships[name]
+            assert rel.passive_deletes is False, (
+                f"{name} has passive_deletes={rel.passive_deletes}; SQLite ignores "
+                "ON DELETE CASCADE unless PRAGMA foreign_keys is on, so children "
+                "would be orphaned"
+            )
+
+
+def test_regression_deleting_a_user_orphans_no_sessions(app):
+    from extensions import db
+    from models import UserSession
+    from passwords import hash_password
+
+    with app.app_context():
+        user = User(username="alice", password_hash=hash_password("correct-horse"))
+        db.session.add(user)
+        db.session.flush()
+        user.start_session(user_agent="laptop", ip_address="127.0.0.1")
+        user.start_session(user_agent="phone", ip_address="127.0.0.1")
+        db.session.add(
+            Footprint(
+                user_id=user.id,
+                car_km=10,
+                electricity_kwh=20,
+                meat_meals=1,
+                plant_meals=1,
+                total=30.0,
+                region="world",
+                factors_version=2,
+            )
+        )
+        db.session.commit()
+        user_id = user.id
+
+        assert UserSession.query.filter_by(user_id=user_id).count() == 2
+
+        # No explicit child cleanup: rely on the relationship alone.
+        db.session.delete(user)
+        db.session.commit()
+
+        assert User.query.filter_by(id=user_id).count() == 0
+        assert UserSession.query.filter_by(user_id=user_id).count() == 0, (
+            "user_session rows outlived the user"
+        )
+        assert Footprint.query.filter_by(user_id=user_id).count() == 0, (
+            "footprint rows outlived the user"
+        )
+
+
+def test_regression_deleting_a_user_leaves_other_users_rows(app):
+    from extensions import db
+    from models import UserSession
+    from passwords import hash_password
+
+    with app.app_context():
+        alice = User(username="alice", password_hash=hash_password("correct-horse"))
+        bob = User(username="bob", password_hash=hash_password("another-password"))
+        db.session.add_all([alice, bob])
+        db.session.flush()
+        alice.start_session(user_agent="alice-laptop", ip_address="127.0.0.1")
+        bob.start_session(user_agent="bob-laptop", ip_address="127.0.0.2")
+        db.session.commit()
+        bob_id = bob.id
+
+        db.session.delete(alice)
+        db.session.commit()
+
+        # The cascade must not reach past the deleted user.
+        assert UserSession.query.filter_by(user_id=bob_id).count() == 1
+

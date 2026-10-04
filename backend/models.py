@@ -54,23 +54,20 @@ class User(db.Model):
         nullable=False,
     )
 
-    # Deleting an account must not leave its sessions behind. Not
-    # passive_deletes: SQLite only honours ON DELETE CASCADE when foreign_keys
-    # is enabled, which it is not by default.
+    # Both children are deleted by the ORM rather than by the database.
+    #
+    # Not passive_deletes: SQLite only honours ON DELETE CASCADE when
+    # `PRAGMA foreign_keys` is on, which it is not by default. Leaving this on
+    # meant deleting an account left its history behind, still reachable by
+    # user_id. Declaring either relationship twice is a trap, because the second
+    # definition silently replaces the first -- that is how `sessions` ended up
+    # with passive_deletes=True here while `footprints` was correct.
     footprints = db.relationship(
         "Footprint",
         back_populates="user",
         cascade="all, delete-orphan",
-        # Not passive_deletes: SQLite only honours ON DELETE CASCADE when
-        # foreign_keys is enabled, which it is not by default. Leaving this on
-        # meant deleting an account left its entire history behind, still
-        # reachable by user_id.
         passive_deletes=False,
     )
-
-    # Deleting an account must not leave its sessions behind. Not
-    # passive_deletes: SQLite only honours ON DELETE CASCADE when foreign_keys
-    # is enabled, which it is not by default.
     sessions = db.relationship(
         "UserSession",
         back_populates="user",
@@ -94,12 +91,6 @@ class User(db.Model):
     email_verified = db.Column(db.Boolean, nullable=False, default=False)
     email_verification_token_hash = db.Column(db.String(64), nullable=True)
     email_verification_sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    sessions = db.relationship(
-        "UserSession",
-        back_populates="user",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
 
     def set_password(self, password):
         # Force pbkdf2 so hash length is predictable and fits comfortably
@@ -174,16 +165,34 @@ class User(db.Model):
         db.session.add(session)
         return session
 
+    def revoke_sessions(self):
+        """Delete every session row for this user.
+
+        The version bump alone would be enough to make the tokens unusable, but
+        the rows would linger: GET /account/sessions would list devices that can
+        no longer authenticate, indistinguishable from live ones, and the table
+        would grow without bound.
+
+        A user that has never been written has no sessions, so this returns
+        without querying. That also keeps the method usable on a transient
+        instance, which is how the token tests exercise it.
+        """
+        if self.id is None:
+            return
+        UserSession.query.filter_by(user_id=self.id).delete()
+
     def apply_new_password(self, password_hash):
         """Set the password, burn the reset token, and revoke live sessions.
 
         The version bump is what kills a refresh cookie stolen before the
-        reset: it still parses, but no longer matches.
+        reset: it still parses, but no longer matches. The rows go too, so the
+        session list only ever shows devices that can still be used.
         """
         self.password_hash = password_hash
         self.password_reset_token_hash = None
         self.password_reset_sent_at = None
         self.token_version = (self.token_version or 1) + 1
+        self.revoke_sessions()
 
     def __repr__(self):
         return f"<User {self.id} {self.username!r}>"
