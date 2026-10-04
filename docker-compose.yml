@@ -1,0 +1,45 @@
+# Local dependencies for development.
+#
+#   docker compose up -d
+#   cd backend && DATABASE_URL=postgresql+psycopg://carbon:carbon@localhost:5432/carbon \
+#     RATELIMIT_STORAGE_URI=redis://localhost:6379/0 python app.py
+#
+# Redis is not optional for more than one worker. Flask-Limiter's memory://
+# store counts per process, so a 10/minute login limit becomes 40 with four
+# workers and no error is raised anywhere. Config.validate() refuses to start in
+# production when WEB_CONCURRENCY is above 1 with memory:// selected.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: carbon
+      POSTGRES_PASSWORD: carbon
+      POSTGRES_DB: carbon
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # The migrate step waits on this, so a cold container does not produce a
+      # confusing "database does not exist" on first run.
+      test: ["CMD-SHELL", "pg_isready -U carbon"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # Rate-limit counters are scratch state. Persisting them across a restart
+    # would let a rate-limited client serve out the clock by waiting for a
+    # deploy, which is the opposite of what a limiter is for.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:

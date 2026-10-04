@@ -212,5 +212,15 @@ class Config:
                     "JWT_COOKIE_SAMESITE=None requires JWT_COOKIE_SECURE; browsers reject it "
                     "on an insecure cookie"
                 )
+            # The limiter's memory:// store counts per process. With several
+            # workers a 10/minute login limit silently becomes 40, so a security
+            # control stops applying without anything failing.
+            workers = _int_env("WEB_CONCURRENCY", 1)
+            if cls.RATELIMIT_STORAGE_URI.startswith("memory://") and workers > 1:
+                problems.append(
+                    f"RATELIMIT_STORAGE_URI is {cls.RATELIMIT_STORAGE_URI!r} but WEB_CONCURRENCY is "
+                    f"{workers}; the rate limiter counts per process, so every limit is multiplied by "
+                    "the worker count. Point RATELIMIT_STORAGE_URI at Redis."
+                )
         if problems:
             raise RuntimeError("Unsafe configuration:\n  - " + "\n  - ".join(problems))

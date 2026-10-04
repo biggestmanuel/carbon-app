@@ -165,6 +165,59 @@ def test_new_not_null_columns_are_backfilled(migration_env):
     assert row[2] == 1, "token_version was not backfilled to the model default"
 
 
+def test_the_history_index_survives_an_upgrade_and_a_downgrade(migration_env):
+    """The composite index behind /footprint/history, both directions."""
+    env, db_path = migration_env
+    flask_db("upgrade", "head", env=env)
+
+    conn = sqlite3.connect(db_path)
+    # PRAGMA index_list gives (seq, name, unique, origin, partial).
+    assert "ix_footprint_user_created" in {
+        r[1] for r in conn.execute("PRAGMA index_list('footprint')")
+    }
+    conn.close()
+
+    flask_db("downgrade", "--", "-1", env=env)
+    conn = sqlite3.connect(db_path)
+    assert "ix_footprint_user_created" not in {
+        r[1] for r in conn.execute("PRAGMA index_list('footprint')")
+    }
+    conn.close()
+
+
+def test_adding_the_index_does_not_rebuild_the_table(migration_env):
+    """An index is instant on a populated table; a table rewrite would not be."""
+    env, db_path = migration_env
+    flask_db("upgrade", "head", env=env)
+    # `--` stops Click parsing the leading dash, which Alembic reads as a
+    # relative revision step.
+    flask_db("downgrade", "--", "-1", env=env)
+
+    conn = sqlite3.connect(db_path)
+    # updated_at is NOT NULL by this revision, and email_verified has no server
+    # default either, so both are supplied explicitly.
+    conn.execute(
+        'INSERT INTO user (username, password_hash, created_at, updated_at, '
+        "email_verified, token_version) VALUES (?, ?, ?, ?, ?, ?)",
+        ("indexed", "x", "2026-01-01 00:00:00", "2026-01-01 00:00:00", 0, 1),
+    )
+    conn.execute(
+        "INSERT INTO footprint (user_id, car_km, electricity_kwh, meat_meals, "
+        "plant_meals, total, region, factors_version, created_at) "
+        "VALUES (1, 5, 5, 1, 1, 9.9, 'fr', 2, '2026-01-02 00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    flask_db("upgrade", "head", env=env)
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT region, total FROM footprint").fetchall()
+    conn.close()
+    # Adding an index must not have touched the data it indexes.
+    assert row == [("fr", 9.9)]
+
+
 def test_create_all_is_disabled_by_default(migration_env):
     """The app must not silently create tables when migrations are the source of truth."""
     env, db_path = migration_env

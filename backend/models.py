@@ -286,6 +286,14 @@ def describe_device(user_agent):
 class Footprint(db.Model):
     __tablename__ = "footprint"
 
+    __table_args__ = (
+        # GET /footprint/history filters on user_id and orders by created_at DESC
+        # with id as the tiebreak. The single-column indexes on user_id and
+        # created_at let Postgres serve that as filter-then-sort; this composite
+        # lets it walk the index in order instead, with no sort step.
+        db.Index("ix_footprint_user_created", "user_id", "created_at", "id"),
+    )
+
     id = db.Column(db.Integer, primary_key=True)
     # Indexed because every read is scoped to a single user.
     user_id = db.Column(db.Integer, db.ForeignKey("user.id", ondelete="CASCADE"),
