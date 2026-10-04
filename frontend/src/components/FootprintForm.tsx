@@ -22,9 +22,6 @@ function FootprintForm({ onSaved }: FootprintFormProps) {
   // Factors come from the backend so grid intensity is never hardcoded here.
   const [catalogue, setCatalogue] = useState<FactorsCatalogue | null>(null);
   const [region, setRegion] = useState("world");
-  // Where the driving happened, when that differs from the home grid. Empty
-  // means "same as home".
-  const [travelRegion, setTravelRegion] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -57,7 +54,7 @@ function FootprintForm({ onSaved }: FootprintFormProps) {
     setResult(null);
 
     // Validate before sending. A blank field is zero, never NaN.
-    const { payload, error: payloadError } = buildPayload(values, region, travelRegion);
+    const { payload, error: payloadError } = buildPayload(values, region);
     if (payloadError !== undefined || payload === undefined) {
       setError(payloadError ?? "Could not read the form.");
       return;
@@ -101,24 +98,6 @@ function FootprintForm({ onSaved }: FootprintFormProps) {
             ))}
           </select>
           <small>Electricity emissions depend on how dirty the local grid is.</small>
-        </div>
-
-        <div className="field">
-          <label htmlFor="fp-travel-region">Drove somewhere else?</label>
-          <select
-            id="fp-travel-region"
-            value={travelRegion}
-            onChange={(e) => setTravelRegion(e.target.value)}
-            disabled={!catalogue}
-          >
-            <option value="">Same as home</option>
-            {regions.map((r) => (
-              <option key={r.code} value={r.code}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-          <small>Only affects driving, which burns fuel rather than grid power.</small>
         </div>
       </div>
 
@@ -169,9 +148,6 @@ function FootprintForm({ onSaved }: FootprintFormProps) {
               </li>
             ))}
           </ul>
-          {result.travel_region && result.travel_region !== result.region && (
-            <p className="hint">Driving scored using the {result.travel_region} fuel mix.</p>
-          )}
           {catalogue && result.factors_version !== catalogue.factors_version && (
             <p className="hint">
               Calculated with factor set v{result.factors_version}; the current set is v

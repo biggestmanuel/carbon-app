@@ -77,7 +77,18 @@ api.interceptors.response.use(
     if (status === 401 && !isAuthEntry && !config._retried) {
       try {
         await refreshAccessToken();
-        return api.request({ ...config, _retried: true } as FlaggedConfig);
+        // Only the request's own fields are carried over. Spreading the whole
+        // config would replay axios's bookkeeping: `data` may already be a
+        // serialised string, `headers` is an AxiosHeaders instance whose methods
+        // a plain spread drops, and transformRequest would run a second time.
+        return api.request({
+          url: config.url,
+          method: config.method,
+          data: config.data,
+          params: config.params,
+          headers: config.headers,
+          _retried: true,
+        });
       } catch {
         // Refresh failed or was rejected; fall through to a clean logout.
       }

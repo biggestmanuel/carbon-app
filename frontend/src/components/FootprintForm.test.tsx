@@ -143,30 +143,25 @@ describe("successful submission", () => {
     expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ total: 146 }));
   });
 
-  it("sends a separate travel region when one is chosen", async () => {
-    const user = userEvent.setup();
+  it("offers no travel-region control, because it could not affect the total", async () => {
     render(<FootprintForm onSaved={vi.fn()} />);
 
-    await waitFor(() => expect(apiMock.get).toHaveBeenCalled());
-    setValue(byId("fp-carKm"), "100");
-    setValue(selectById("fp-travel-region"), "in");
-    await user.click(screen.getByRole("button", { name: /^calculate$/i }));
-
-    await waitFor(() => expect(apiMock.post).toHaveBeenCalledTimes(1));
-    expect(apiMock.post.mock.calls[0]?.[1]).toMatchObject({
-      region: "world",
-      travel_region: "in",
-    });
+    // Car emissions use one global factor, so "Drove somewhere else?" changed
+    // nothing while its hint claimed otherwise. Removed rather than left as a
+    // control that silently does nothing. See backend/tests/test_travel_region.py
+    await screen.findByLabelText(/grid region/i);
+    expect(document.getElementById("fp-travel-region")).toBeNull();
+    expect(screen.queryByLabelText(/drove somewhere else/i)).toBeNull();
   });
 
-  it("omits travel_region when it matches home", async () => {
+  it("never sends a travel_region in the payload", async () => {
     const user = userEvent.setup();
     render(<FootprintForm onSaved={vi.fn()} />);
 
+    setValue(byId("fp-carKm"), "100");
     await user.click(screen.getByRole("button", { name: /^calculate$/i }));
 
     await waitFor(() => expect(apiMock.post).toHaveBeenCalledTimes(1));
-    // Sending an empty string would make the backend treat "" as a region.
     expect(apiMock.post.mock.calls[0]?.[1]).not.toHaveProperty("travel_region");
   });
 

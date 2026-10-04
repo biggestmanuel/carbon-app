@@ -296,10 +296,22 @@ enough to destroy someone's data. The UI additionally requires typing `DELETE`.
 ## Emission factors
 
 Defined in `backend/factors.py` and served by `/footprint/factors`, so the UI never
-hardcodes them. Every entry records its region, its travel region and a **snapshot
-of the exact factors used**. That snapshot is what keeps history stable: when the
-factor table is updated, old entries keep scoring the way they originally did,
-instead of being silently reinterpreted.
+hardcodes them. Every entry records its region and a **snapshot of the exact
+factors used**. That snapshot is what keeps history stable: when the factor table
+is updated, old entries keep scoring the way they originally did, instead of being
+silently reinterpreted.
+
+Only the electricity factor varies by region. Car emissions use a single global
+`0.21 kg CO2e/km` and the diet factors are global medians, so those numbers are
+the same everywhere.
+
+`POST /footprint/calculate` also accepts `travel_region`, for driving that happened
+somewhere other than the home grid. **It currently changes nothing**, because the
+car factor is that same global constant. The API keeps the field and a test pins
+the fact, but the form offers no selector for it: a control that silently does
+nothing is worse than no control. Region-specific car factors would be a data
+decision needing a source; when that happens `backend/tests/test_travel_region.py`
+starts failing and says so.
 
 `travel_region` exists because the two do not always match. A UK resident driving
 in France pays the UK grid factor for electricity but a different fuel mix for the
@@ -427,7 +439,8 @@ in agreement.
   as Electricity Maps if that precision matters. The factor snapshot on each entry
   means such an update will not rewrite history.
 - **Diet factors are global medians, not per-country.** Car factors are a single
-  global average, so fuel mix differences between countries are not modelled.
+  global average too, so fuel-mix differences between countries are not modelled
+  at all. That is also why the `travel_region` field has no effect today.
 - **Rate limits need Redis in production.** The default `memory://` store counts
   per process, so N workers means N times the intended limit. This is set by
   configuration, not by the app, and nothing warns you at startup if you leave it.

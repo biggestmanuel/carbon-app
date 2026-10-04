@@ -13,7 +13,6 @@ export type FormValues = Record<FieldSpec["key"], string>;
 
 export interface CalculatePayload {
   region: string;
-  travel_region?: string;
   car_km: number;
   electricity_kwh: number;
   meat_meals: number;
@@ -120,15 +119,14 @@ export function parseField(field: FieldSpec, raw: string | number): ParseResult 
 /**
  * Build the request body, or return the first validation error found.
  *
- * travelRegion is omitted when blank so the backend applies its own default of
- * "same as home" rather than treating an empty string as a region. Sending
- * "" would be worse than sending nothing: the backend would look up a region
- * literally named "" and fall back silently.
+ * There is deliberately no travelRegion parameter. The backend still accepts
+ * `travel_region`, but car emissions use a single global factor, so the value
+ * cannot change any total -- and a control that silently does nothing is worse
+ * than no control. See the pinned test in the backend suite.
  */
 export function buildPayload(
   values: FormValues,
-  region: string,
-  travelRegion = ""
+  region: string
 ): { payload?: CalculatePayload; error?: string } {
   const parsed: Partial<Record<FieldSpec["apiKey"], number>> = {};
 
@@ -147,7 +145,6 @@ export function buildPayload(
     meat_meals: parsed.meat_meals ?? 0,
     plant_meals: parsed.plant_meals ?? 0,
   };
-  if (travelRegion) payload.travel_region = travelRegion;
 
   return { payload };
 }

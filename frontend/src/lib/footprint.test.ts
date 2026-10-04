@@ -79,14 +79,12 @@ describe("buildPayload", () => {
     expect(buildPayload(EMPTY_VALUES, "fr").payload?.region).toBe("fr");
   });
 
-  it("omits travel_region when blank", () => {
-    const { payload } = buildPayload(EMPTY_VALUES, "gb", "");
+  it("never sends a travel_region", () => {
+    // Car emissions use one global factor, so a travel region cannot change any
+    // total. The selector was removed rather than left doing nothing; the
+    // backend still accepts the field. See backend/tests/test_travel_region.py.
+    const { payload } = buildPayload(EMPTY_VALUES, "gb");
     expect(payload).not.toHaveProperty("travel_region");
-  });
-
-  it("includes travel_region when set", () => {
-    const { payload } = buildPayload(EMPTY_VALUES, "gb", "fr");
-    expect(payload?.travel_region).toBe("fr");
   });
 
   it("sends zeros for blank fields", () => {
