@@ -110,12 +110,20 @@ ones that matter:
 | `RESET_REQUIRES_VERIFIED_EMAIL` | `true`           | Refuse resets to unconfirmed addresses    |
 | `PROXY_FIX_X_FOR`          | `0`                    | Number of trusted proxies; 0 = none      |
 | `SESSION_TOUCH_INTERVAL_SECONDS` | `300`             | `last_seen_at` write frequency           |
+| `BREACH_CHECK_ENABLED`     | `true`                 | Refuse known-compromised passwords        |
+| `BREACH_CHECK_TIMEOUT_SECONDS` | `2`                | Fails open, so an outage cannot lock out |
+| `TOTP_ENCRYPTION_KEY`      | unset                  | Fernet key for TOTP seeds. See 2FA below  |
+| `TOTP_ISSUER`              | `carbon-app`           | Shown in the authenticator app            |
+| `TOTP_RECOVERY_CODES`      | `10`                   | Issued at enrolment                       |
+| `TOTP_DISABLE_REQUIRES_PASSWORD` | `true`           | Also require the password to turn 2FA off |
 | `FLASK_ENV`                | `development`          | `production` enables the safety checks    |
 
 `Config.validate()` refuses to start in production when the secrets are still
 placeholders, when the cookie is not Secure, when `CORS_ORIGINS` is `*`, when
-`AUTO_CREATE_TABLES` is on, or when mail is half-configured. It reports every
-problem at once rather than the first.
+`AUTO_CREATE_TABLES` is on, when mail is half-configured, when
+`RATELIMIT_STORAGE_URI` is `memory://` with more than one worker, or when
+`TOTP_ENCRYPTION_KEY` is set but malformed. It reports every problem at once rather
+than the first.
 
 Frontend config is `VITE_API_URL` in `frontend/.env` (see `.env.example`).
 
@@ -124,7 +132,10 @@ Frontend config is `VITE_API_URL` in `frontend/.env` (see `.env.example`).
 Access and refresh tokens are set as **httpOnly cookies**, so page scripts and XSS
 payloads cannot read them. Nothing is stored in `localStorage`.
 
-- `POST /auth/login` sets both cookies and returns only the username.
+- `POST /auth/login` sets both cookies and returns only the username. With a
+  second factor armed it instead returns `mfa_required` and a five-minute
+  `pending_token`, and sets **no** cookies; `POST /auth/mfa/check` then takes that
+  token plus a code and sets the real cookies.
 - `POST /auth/logout` clears them and is idempotent.
 - `POST /auth/refresh` trades the refresh cookie for a new access cookie.
 - On a `401`, the frontend tries one refresh and replays the request, so the
@@ -183,16 +194,28 @@ Per-route limits via Flask-Limiter, keyed by client IP:
 | `POST /auth/login`     | 10 per minute |
 | `POST /auth/register`  | 5 per hour    |
 | `POST /auth/forgot-password`, `/account/verify-email/*` | 5 per hour (`RESET_RATE_LIMIT`) |
+| `POST /auth/mfa/check` | 5 per minute (`TOTP_RATE_LIMIT`) |
+| `/auth/mfa/start`, `/confirm`, `/disable`, `/recovery-codes` | 5 per hour (`TOTP_MANAGE_RATE_LIMIT`) |
 | `DELETE /account/account` | 3 per hour (`DELETE_RATE_LIMIT`) |
 | `POST /footprint/calculate` | 120 per minute |
 | `GET /footprint/history`, `/footprint/summary` | 120 per minute |
 
 Breaches return `429` with a JSON body and `Retry-After`.
 
+`GET /health` is deliberately unthrottled: a load balancer polling it could get a
+`429` and pull a healthy instance out of rotation, which is a self-inflicted
+outage in exchange for protecting a two-key JSON response.
+
 **Set `RATELIMIT_STORAGE_URI` to Redis before running more than one worker.** The
 default `memory://` store counts per process, so a limit of 10/minute becomes 40
 with four workers. That is a security control quietly not applying, not a
-performance detail.
+performance detail — so `Config.validate()` refuses to start in production when
+`memory://` is combined with `WEB_CONCURRENCY` above 1, and says what to do. One
+worker is still allowed, because there the limiter genuinely works.
+
+```bash
+docker compose up -d    # Postgres and Redis, for local development
+```
 
 ## API
 
@@ -201,7 +224,13 @@ All `/footprint/*` routes except `/footprint/factors` require a session cookie.
 | Method | Path                     | Purpose                                  |
 | ------ | ------------------------ | ---------------------------------------- |
 | POST   | `/auth/register`         | Create an account; `email` optional      |
-| POST   | `/auth/login`            | Sets cookies, returns `username`         |
+| POST   | `/auth/login`            | Sets cookies, or `mfa_required` + a pending token |
+| POST   | `/auth/mfa/check`        | Pending token + code → real session cookies |
+| GET    | `/auth/mfa/start`        | Begin enrolment; returns the secret and otpauth URI |
+| POST   | `/auth/mfa/confirm`      | Turn 2FA on; returns the recovery codes, once |
+| POST   | `/auth/mfa/disable`      | Turn 2FA off; needs a code *and* the password |
+| GET    | `/auth/mfa/status`       | Whether 2FA is on and how many codes remain |
+| POST   | `/auth/mfa/recovery-codes` | Replace the recovery codes; needs the password |
 | POST   | `/auth/refresh`          | New access cookie from the refresh cookie|
 | POST   | `/auth/logout`           | Clears cookies                           |
 | GET    | `/auth/me`               | Confirm a session; email is masked       |
@@ -336,15 +365,20 @@ factor snapshot, so mixed-region histories are reported correctly.
 
 ```bash
 cd backend
-python -m pytest tests -q        # 222 tests
+python -m pytest tests -q        # 507 tests
 ruff check .                    # lint
 
 cd frontend
-npm test                        # 126 tests
+npm test                        # 175 tests
+npm run test:e2e                # 16 real-browser layout tests
 npm run typecheck               # tsc --noEmit, strict
 npm run lint
 npm run build
 ```
+
+The browser tests need Chromium once: `npm run test:e2e:install`. They serve the
+production build themselves and stub the API, so no backend or database is
+involved and a backend outage cannot be mistaken for a layout regression.
 
 The suite runs against in-memory SQLite by default. Point `TEST_DATABASE_URL` at
 another engine to run the same tests there:
@@ -375,6 +409,14 @@ reach it: `type="number"` inputs reject the very values the parser exists to
 catch. Test mocks go through `src/test/api-mock.ts` so `.mockResolvedValue`
 stays type-checked.
 
+The `e2e/` tests exist because jsdom implements none of `overflow-x`,
+`white-space` or `font-variant-numeric`, so a DOM test cannot tell a rendered
+layout apart from a broken one — it can only read the stylesheet source and hope
+the rule is not overridden later. Playwright asserts computed values and real box
+geometry at 320, 768 and 1440px. It earned its place immediately: the first run
+failed on `.columns` using `minmax(320px, 1fr)`, whose grid track cannot shrink
+below its minimum, so every 320px-wide phone scrolled horizontally by 20px.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request to `main`:
@@ -382,8 +424,12 @@ stays type-checked.
 - **Backend (sqlite)**: `ruff check`, `pip-audit`, `flask db check`, pytest.
 - **Backend (postgres)**: the migrations and the full suite against Postgres 16.
 - **Frontend**: lint, `npm audit`, `tsc --noEmit`, tests, build.
+- **Layout (real browser)**: Chromium, the Playwright suite, and the failure
+  report uploaded as an artifact. A separate job because it needs a browser
+  download and a live server, and failing the fast checks on that startup cost
+  would be misleading.
 
-Four of these steps exist because of specific failures this project had:
+Five of these steps exist because of specific failures this project had:
 
 `flask db check` autogenerates against a migrated database and fails if the
 models have drifted from the migration history, catching a model edited without
@@ -430,40 +476,90 @@ in agreement.
 
 ## Known limitations
 
-- **Emission factors are static reference values.** Grid mixes shift over time and
-  are not region-specific below the country level. Wire in a live data source such
-  as Electricity Maps if that precision matters. The factor snapshot on each entry
-  means such an update will not rewrite history.
-- **Emission factors are static reference values.** Grid mixes shift over time and
-  are not region-specific below the country level. Wire in a live data source such
-  as Electricity Maps if that precision matters. The factor snapshot on each entry
-  means such an update will not rewrite history.
-- **Diet factors are global medians, not per-country.** Car factors are a single
-  global average too, so fuel-mix differences between countries are not modelled
-  at all. That is also why the `travel_region` field has no effect today.
+The list of things that used to be here and are now fixed is at the end, with the
+commit that fixed each one. What remains is genuinely outstanding.
+
+### Still outstanding
+
+- **Emission factors are static reference values.** Grid mixes shift over time, so
+  a factor set is a snapshot of one estimate rather than a live reading. A live
+  source such as Electricity Maps would improve this. The per-entry factor
+  snapshot means such an update will not rewrite history.
+- **Diet factors are global medians, not per-country.** Poore & Nemecek is a global
+  dataset and there is no reliable per-country equivalent, so inventing one would
+  mean fabricating numbers. Diet factors therefore carry no region dimension at
+  all.
+- **Only the United States has a measured car factor.** Every other region stands in
+  for the documented global default, which is the UK DEFRA fleet average. Those
+  figures come from incompatible sources — EEA reports *new* cars under type
+  approval, EPA reports a *typical* vehicle, DEFRA reports a fleet average — and
+  treating them as equivalent would misrepresent them. The API reports
+  `car_km_is_default: true` per region so the gap is machine-readable, and the form
+  only offers travel regions whose car factor actually differs. Adding a region
+  means adding an attributable figure, not another constant.
 - **Rate limits need Redis in production.** The default `memory://` store counts
-  per process, so N workers means N times the intended limit. This is set by
-  configuration, not by the app, and nothing warns you at startup if you leave it.
-- **No password rotation policy or breach check.** Passwords are hashed with
-  scrypt. There is no check against known-compromised passwords, which is the
-  most likely way a password here is guessed in practice.
+  per process, so N workers means N times the intended limit. The app now refuses
+  to start in production when `memory://` is combined with `WEB_CONCURRENCY` above
+  1, and says why. `docker compose up -d` brings up Postgres and Redis locally.
 - **`/footprint/summary` is O(entries).** It walks every row to recompute the
   per-category split, because each entry carries its own factor snapshot and
   summing today's factors would misreport the breakdown. Fine for a personal
   tracker; it would need precomputed columns or a cache at a much larger scale.
-  `history()` filters on `user_id` and sorts by `created_at`, which the two
-  single-column indexes serve with a sort rather than an index scan. A composite
-  index would fix that and was left out deliberately: at this scale it buys
-  nothing measurable, and it is a migration to maintain for a hypothetical.
-- **Sessions are not visible enough to spot theft at a glance.** The device list
-  shows a browser family and IP, so it is recognisable, but it is not a full
-  fingerprint and will not distinguish two laptops on the same network.
-- **No frontend test for the layout as rendered.** jsdom implements none of
-  `overflow-x`, `white-space` or `font-variant-numeric`, so the stylesheet rules
-  the history table depends on are asserted by reading the CSS source rather than
-  computed style. That catches a rule being deleted; it cannot catch the rule
-  being overridden by a later one.
-- **No 2FA.** Sessions are revocable and password reset is token-based, but a
-  phished password is a full account compromise.
+  (`history()`, by contrast, now has a composite `(user_id, created_at, id)` index
+  and is an index scan rather than a sort.)
 - **Single-region factor granularity** means a user who moves house keeps one
   factor set per entry rather than a history of grid changes.
+- **Sessions are recognisable, not identifiable.** Labels now name the platform —
+  "Chrome on Windows" — and anything this account had not used from before is
+  flagged. Two laptops on the same network behind the same NAT are still
+  indistinguishable, and the IP is only as good as `PROXY_FIX_X_FOR`.
+- **No forced password rotation.** There is a breach check against Have I Been
+  Pwned when a password is chosen, but no expiry policy. Rotation schedules are
+  widely considered to reduce security rather than raise it, so this is left to
+  the operator rather than added by default.
+
+### Two-factor authentication
+
+Optional, per account, in Settings. TOTP is implemented on stdlib `hmac`, `hashlib`
+and `struct` and verified against the RFC 6238 test vectors.
+
+- A correct password alone never issues a session. With 2FA on, `POST /auth/login`
+  returns a five-minute `pending_token` and no cookies; the session is minted only
+  once a code verifies against it.
+- The seed is **encrypted at rest** with Fernet, keyed from `TOTP_ENCRYPTION_KEY`.
+  It cannot be hashed, since verification needs the original bytes, so a plaintext
+  column would let anyone holding a database backup mint valid codes. Generate the
+  key with:
+
+  ```bash
+  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+  ```
+
+  A malformed key is rejected at startup. An *absent* key is allowed: 2FA is
+  opt-in, and the enrolment endpoint answers `503` with an actionable message
+  rather than the app refusing to boot for a feature nobody asked for.
+- Codes cannot be replayed — the spent time step is recorded and only advances.
+  Recovery codes are hashed, single-use, and invalidated by a password reset.
+- Disabling requires a current code *and* the password, and revokes every session.
+- A wrong TOTP code, a wrong recovery code, a malformed one and a missing one all
+  return the same status and body, and both lookups always run, so the response
+  does not reveal which path was guessed.
+
+### Fixed since the audit
+
+Each of these was a documented limitation and now is not.
+
+| Limitation | Fix |
+| --- | --- |
+| Duplicate `sessions` relationship orphaning rows | `Phase 1`, `User.sessions` declared once |
+| `logout` 401-ing on an expired cookie and leaking its session row | `Phase 2` |
+| `X-Forwarded-For` trusted for the recorded client IP | `Phase 3`, `request.remote_addr` |
+| Test config hardcoded SQLite, so Postgres was never exercised | `Phase 4`, `TEST_DATABASE_URL` |
+| scrypt over pbkdf2 (21m43s → 1m27s) | `Phase 5` |
+| `travel_region` accepted but inert | region-keyed car factors with provenance |
+| No breached-password check | HIBP k-anonymity, fails open |
+| Per-process rate limits warned about nothing | `Config.validate()` refuses to start |
+| `history()` filter-then-sort | composite `(user_id, created_at, id)` index |
+| Sessions not readable at a glance | platform labels and familiarity flags |
+| Layout asserted from CSS source, not rendering | Playwright, which found a real overflow bug |
+| No 2FA | optional TOTP with recovery codes |
