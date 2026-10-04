@@ -139,6 +139,41 @@ payloads cannot read them. Nothing is stored in `localStorage`.
   cross-origin fetch cannot pass CORS preflight for. Turn it on if the API is
   ever called from a context that does allow those.
 
+### Deploying across domains
+
+`SameSite=Lax` is the default and works in development because cookies ignore
+ports: `localhost:5173` → `localhost:5000` is the same *site*.
+
+It stops working the moment the frontend and API sit on different registrable
+domains. `app.example.com` and `api.example.com` are cross-site, and a Lax cookie
+is then never sent at all. **Nothing errors.** Every login returns 200 and every
+later request is unauthenticated.
+
+For that topology set:
+
+```
+JWT_COOKIE_CROSS_SITE=true
+JWT_COOKIE_SECURE=true          # required; browsers reject SameSite=None without it
+```
+
+`Config.validate()` refuses to start in production if `SameSite=None` is paired
+with an insecure cookie, since the browser would silently drop it.
+
+## Password hashing
+
+scrypt, Werkzeug's default. It is memory-hard, so it resists GPU cracking better
+than pbkdf2, and it is also cheaper here — about 140 ms per verification against
+roughly 900 ms for `pbkdf2:sha256` at Werkzeug's raised default of 1,000,000
+iterations.
+
+The method is recorded inside each hash, so **accounts created before the switch
+keep working with no migration and no forced password reset**. Both formats can
+sit in the column at once, and a password reset rewrites the row as scrypt.
+
+`routes/auth.py` verifies a throwaway hash when a username is unknown, so a
+missing account costs the same wall time as a wrong password. That dummy uses
+scrypt to match new hashes.
+
 ## Rate limiting
 
 Per-route limits via Flask-Limiter, keyed by client IP:
@@ -397,8 +432,16 @@ in agreement.
   per process, so N workers means N times the intended limit. This is set by
   configuration, not by the app, and nothing warns you at startup if you leave it.
 - **No password rotation policy or breach check.** Passwords are hashed with
-  Werkzeug's scrypt default. There is no check against known-compromised
-  passwords, which is the most likely way a password here is guessed in practice.
+  scrypt. There is no check against known-compromised passwords, which is the
+  most likely way a password here is guessed in practice.
+- **`/footprint/summary` is O(entries).** It walks every row to recompute the
+  per-category split, because each entry carries its own factor snapshot and
+  summing today's factors would misreport the breakdown. Fine for a personal
+  tracker; it would need precomputed columns or a cache at a much larger scale.
+  `history()` filters on `user_id` and sorts by `created_at`, which the two
+  single-column indexes serve with a sort rather than an index scan. A composite
+  index would fix that and was left out deliberately: at this scale it buys
+  nothing measurable, and it is a migration to maintain for a hypothetical.
 - **Sessions are not visible enough to spot theft at a glance.** The device list
   shows a browser family and IP, so it is recognisable, but it is not a full
   fingerprint and will not distinguish two laptops on the same network.

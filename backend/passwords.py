@@ -45,8 +45,9 @@ def is_expired(created_at, now=None):
 
 
 def hash_password(password):
-    # Force pbkdf2 for a predictable hash length, matching models.User.
-    return generate_password_hash(password, method="pbkdf2:sha256")
+    # scrypt, matching models.User.set_password. Werkzeug records the method
+    # inside the hash, so a hash written by either method still verifies.
+    return generate_password_hash(password, method="scrypt")
 
 
 def verify_password(stored_hash, password):

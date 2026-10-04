@@ -119,8 +119,16 @@ def test_calculate_is_rate_limited(limited_client):
 
 
 def test_health_is_not_rate_limited(limited_client):
+    # Deliberate. A load balancer polling /health must never see a 429, or it
+    # may pull a healthy instance out of rotation.
     for _ in range(20):
         assert limited_client.get("/health").status_code == 200
+
+
+def test_factors_catalogue_is_rate_limited(limited_client):
+    # Unauthenticated, and it returns the whole region table every time.
+    statuses = [limited_client.get("/footprint/factors").status_code for _ in range(8)]
+    assert 429 in statuses, f"expected a 429, got {statuses}"
 
 
 def test_limits_disabled_when_flag_off(client):

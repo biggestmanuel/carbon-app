@@ -131,6 +131,10 @@ def _register_error_handlers(app):
 
     @app.get("/health")
     def health():
+        # Deliberately unthrottled. A load balancer or uptime monitor polling
+        # this would get a 429 if the limit were ever reached, and may then pull
+        # a perfectly healthy instance out of rotation -- a self-inflicted
+        # outage in exchange for protecting a two-key JSON response.
         return jsonify({"status": "ok"})
 
     # flask-jwt-extended returns bare 401s by default. Normalise them so the

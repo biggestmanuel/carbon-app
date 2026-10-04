@@ -50,7 +50,21 @@ class Config:
     JWT_TOKEN_LOCATION = ["cookies"]
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=_int_env("JWT_ACCESS_TOKEN_MINUTES", 30))
     JWT_COOKIE_SECURE = _bool_env("JWT_COOKIE_SECURE", ENV == "production")
-    JWT_COOKIE_SAMESITE = os.environ.get("JWT_COOKIE_SAMESITE", "Lax")
+    # Cookies ignore ports, so localhost:5173 -> localhost:5000 is the same site
+    # and Lax works in development.
+    #
+    # It is NOT the same site once the frontend and API sit on different
+    # registrable domains: app.example.com and api.example.com are cross-site, and
+    # a Lax cookie is then never sent at all. Authentication fails silently --
+    # every login "succeeds" and every later request is unauthenticated. Set
+    # JWT_COOKIE_CROSS_SITE=true for that topology; it forces SameSite=None,
+    # which browsers only accept alongside Secure.
+    JWT_COOKIE_CROSS_SITE = _bool_env("JWT_COOKIE_CROSS_SITE", False)
+    JWT_COOKIE_SAMESITE = (
+        "None"
+        if JWT_COOKIE_CROSS_SITE
+        else os.environ.get("JWT_COOKIE_SAMESITE", "Lax")
+    )
     # csrf_protect stays off because every state-changing request is a JSON POST
     # from an allowlisted origin, which a cross-site form cannot forge and a
     # cross-origin fetch cannot pass CORS preflight for. Turn on if the API is
@@ -168,6 +182,25 @@ class Config:
                 problems.append(
                     "RESET_REQUIRES_VERIFIED_EMAIL is on but MAIL_ENABLED is off, so no address "
                     "can ever be confirmed and password reset is unreachable"
+                )
+            if cls.JWT_COOKIE_CROSS_SITE:
+                # A browser silently drops SameSite=None without Secure, so the
+                # cookie would vanish: every login would appear to succeed while
+                # authenticating nothing.
+                if not cls.JWT_COOKIE_SECURE:
+                    problems.append(
+                        "JWT_COOKIE_CROSS_SITE requires JWT_COOKIE_SECURE; browsers reject "
+                        "SameSite=None on an insecure cookie"
+                    )
+                if cls.JWT_COOKIE_SAMESITE != "None":
+                    problems.append(
+                        "JWT_COOKIE_CROSS_SITE forces SameSite=None but it is "
+                        f"{cls.JWT_COOKIE_SAMESITE!r}"
+                    )
+            elif cls.JWT_COOKIE_SAMESITE == "None" and not cls.JWT_COOKIE_SECURE:
+                problems.append(
+                    "JWT_COOKIE_SAMESITE=None requires JWT_COOKIE_SECURE; browsers reject it "
+                    "on an insecure cookie"
                 )
         if problems:
             raise RuntimeError("Unsafe configuration:\n  - " + "\n  - ".join(problems))

@@ -154,8 +154,13 @@ def calculate():
 
 
 @footprint_bp.route("/factors", methods=["GET"])
+@limiter.limit(lambda: current_app.config["READ_RATE_LIMIT"], exempt_when=rate_limits_exempt)
 def factors_catalogue():
-    """Public so the form can label regions and show per-unit factors."""
+    """Public so the form can label regions and show per-unit factors.
+
+    Throttled anyway: it is unauthenticated, and an unthrottled public endpoint
+    is free CPU for anyone who wants to keep asking.
+    """
     return jsonify(catalogue())
 
 

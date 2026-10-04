@@ -34,7 +34,14 @@ GENERIC_RESET_MSG = "If that address exists, a reset link is on its way."
 # Verified against a throwaway hash when the username is unknown so that a
 # missing account costs the same wall time as a wrong password, closing the
 # user-enumeration timing side channel.
-_DUMMY_HASH = generate_password_hash("timing-equaliser-not-a-real-password", method="pbkdf2:sha256")
+#
+# The method must match what set_password() writes. Werkzeug records the method
+# inside the hash string, so a table can hold both after a switch; comparing a
+# scrypt dummy against a pbkdf2 hash would reintroduce the timing gap for
+# accounts created before the change.
+_DUMMY_HASH = generate_password_hash(
+    "timing-equaliser-not-a-real-password", method="scrypt"
+)
 
 
 def _credentials_from_request():
@@ -287,8 +294,11 @@ def forgot_password():
     except Exception:
         db.session.rollback()
         current_app.logger.exception("Password reset email failed")
-        # Do not claim success, and do not leak the address either.
-        return jsonify({"msg": "Could not send the reset email. Try again later."}), 502
+        # Same 202 and the same body as every other outcome. A 502 here is a
+        # user-enumeration oracle: it fires only when the address exists, is
+        # confirmed, and the SMTP call failed. The operator gets the traceback in
+        # the log; the caller learns nothing about whether the account is real.
+        return jsonify({"msg": GENERIC_RESET_MSG}), 202
 
     response = {"msg": GENERIC_RESET_MSG}
 

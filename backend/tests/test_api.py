@@ -11,8 +11,11 @@ def test_register_returns_201(client):
 
 def test_register_never_returns_the_hash(client):
     res = client.post("/auth/register", json={"username": "alice", "password": "correct-horse"})
-    assert "pbkdf2" not in res.text
-    assert "password_hash" not in res.text
+    # Method-agnostic on purpose: this used to assert "pbkdf2" was absent, which
+    # silently stopped meaning anything once the hash switched to scrypt. Any
+    # hash prefix, or the column name, means a leak.
+    for marker in ("pbkdf2", "scrypt", "password_hash", "argon2", "hashlib"):
+        assert marker not in res.text, f"{marker!r} appeared in the register response"
 
 
 def test_duplicate_username_returns_409(client):
