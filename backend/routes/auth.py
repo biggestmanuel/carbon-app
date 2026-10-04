@@ -15,6 +15,7 @@ from flask_jwt_extended import (
 from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from breached import is_breached
 from extensions import db, limiter, rate_limits_exempt
 from mail import send_password_reset, send_verification
 from models import User, UserSession
@@ -97,6 +98,25 @@ def _normalise_email(raw):
     return email if EMAIL_RE.match(email) else ""
 
 
+def _breached_password_error(password):
+    """A message when the password is in a public breach corpus, else None.
+
+    Checked when a password is chosen rather than on every login: the check costs
+    a network round trip, and a password already in a breach corpus is a problem
+    when it is set, not when it is used.
+    """
+    if not current_app.config["BREACH_CHECK_ENABLED"]:
+        return None
+    if not is_breached(
+        password, timeout=current_app.config["BREACH_CHECK_TIMEOUT_SECONDS"]
+    ):
+        return None
+    return (
+        "That password has appeared in a public data breach. "
+        "Choose something that has not."
+    )
+
+
 @auth_bp.route("/register", methods=["POST"])
 @limiter.limit(lambda: current_app.config["REGISTER_RATE_LIMIT"], exempt_when=rate_limits_exempt)
 def register():
@@ -110,6 +130,10 @@ def register():
     email = _normalise_email(data.get("email"))
     if email == "":
         return jsonify({"msg": "email must be a valid address"}), 400
+
+    breached = _breached_password_error(password)
+    if breached:
+        return jsonify({"msg": breached, "errors": {"password": breached}}), 400
 
     user = User(username=username, email=email)
     user.set_password(password)
@@ -331,6 +355,12 @@ def reset_password():
     if user is None or not user.matches_reset_token(token):
         # Same message for unknown, wrong and expired: do not distinguish.
         return jsonify({"msg": "This reset link is invalid or has expired."}), 400
+
+    # Checked before consuming the token, so a rejected password leaves the
+    # reset link usable rather than burning it on an attempt that cannot work.
+    breached = _breached_password_error(new_password)
+    if breached:
+        return jsonify({"msg": breached, "errors": {"password": breached}}), 400
 
     user.apply_new_password(hash_password(new_password))
     db.session.commit()

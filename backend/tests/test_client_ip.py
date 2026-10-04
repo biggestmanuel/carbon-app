@@ -8,34 +8,46 @@ header is honoured exactly when it should be.
 
 import pytest
 
-from config import Config
 from extensions import db
 from models import UserSession
+from tests.conftest import TestConfig
 
 
-class _ProxyConfig(Config):
-    """One trusted proxy, as a load balancer deployment would run."""
+class _ProxyConfig(TestConfig):
+    """One trusted proxy, as a load balancer deployment would run.
 
-    ENV = "development"
-    TESTING = True
-    SQLALCHEMY_DATABASE_URI = "sqlite://"
-    AUTO_CREATE_TABLES = False
-    JWT_COOKIE_SECURE = False
-    RATELIMIT_ENABLED = False
+    Subclasses TestConfig rather than Config so it inherits the safe test
+    defaults -- notably BREACH_CHECK_ENABLED=False, since a local config that
+    reached the real Have I Been Pwned API made registration fail for a password
+    that genuinely is in that corpus.
+    """
+
     PROXY_FIX_X_FOR = 1
 
 
 @pytest.fixture
-def proxied_client():
+def proxied_client(app):
+    """A second app configured as if behind one trusted proxy.
+
+    Reuses the session-scoped schema rather than building its own, and must not
+    drop the tables on the way out: against a real database server this app points
+    at the *same* database as the shared one, so a drop_all() here tears down the
+    schema that every later test depends on. On in-memory SQLite the engine is
+    private and the same drop would be harmless, which is exactly the kind of
+    difference that only shows up in CI.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
     from app import create_app
+    from extensions import db
 
     application = create_app(_ProxyConfig)
     with application.app_context():
         db.session.remove()
-        db.create_all()
+        if not sa_inspect(db.engine).has_table("user"):
+            db.create_all()
         yield application.test_client()
         db.session.remove()
-        db.drop_all()
 
 
 def _register_and_login(client, username="alice"):

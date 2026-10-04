@@ -35,6 +35,10 @@ class TestConfig(Config):
     # Rate limits are exercised explicitly in test_ratelimit.py; leave them off
     # everywhere else so unrelated tests are not throttled by ordering.
     RATELIMIT_ENABLED = False
+    # The breach check calls a third party over the network. Tests must never
+    # depend on someone else's availability, and "correct-horse" is genuinely in
+    # that corpus, so leaving this on made every registration fail for real.
+    BREACH_CHECK_ENABLED = False
 
 
 def _empty_every_table():

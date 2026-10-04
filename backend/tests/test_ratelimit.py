@@ -3,31 +3,27 @@
 Flask-Limiter skips throttling when RATELIMIT_ENABLED is off or TESTING is set,
 so these tests enable it explicitly and use a fresh in-memory store each time.
 """
-import os
 
 import pytest
 
-from config import Config
-
-# Same source as tests/conftest.py. Read from the environment rather than
-# imported, because importing conftest as a module relies on it being an
-# importable package, which it is not declared to be.
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "sqlite://")
+from tests.conftest import TestConfig
 
 
-class LimitedConfig(Config):
+class LimitedConfig(TestConfig):
     """Tight limits so the tests need only a handful of requests.
 
     RATELIMIT_ENABLED is on, so throttling is genuinely exercised rather than
-    bypassed by a test-mode exemption. Subclasses Config rather than the shared
-    TestConfig on purpose: TestConfig sets TESTING, and Flask-Limiter skips
-    throttling entirely when TESTING is set.
+    bypassed by a test-mode exemption.
+
+    Subclasses TestConfig to inherit the safe defaults -- notably
+    BREACH_CHECK_ENABLED=False, since reaching the real Have I Been Pwned API
+    from a test made registration fail for a password that is in that corpus.
+
+    TESTING goes back to False because Flask-Limiter skips throttling entirely
+    when it is set, which would make every assertion here vacuous.
     """
 
-    ENV = "development"
-    SQLALCHEMY_DATABASE_URI = TEST_DATABASE_URL
-    AUTO_CREATE_TABLES = False
-    JWT_COOKIE_SECURE = False
+    TESTING = False
     RATELIMIT_ENABLED = True
     RATELIMIT_STORAGE_URI = "memory://"
     LOGIN_RATE_LIMIT = "5 per minute"

@@ -132,6 +132,16 @@ class Config:
     # every single request.
     SESSION_TOUCH_INTERVAL_SECONDS = _int_env("SESSION_TOUCH_INTERVAL_SECONDS", 300)
 
+    # --- Password hygiene ---------------------------------------------------
+    # Checks new and reset passwords against the Have I Been Pwned corpus using
+    # the k-anonymity range API: the first five characters of the SHA-1 digest go
+    # out and the password never does. Fails open, so an outage at their end
+    # cannot lock anyone out of their own account.
+    BREACH_CHECK_ENABLED = _bool_env("BREACH_CHECK_ENABLED", True)
+    BREACH_CHECK_TIMEOUT_SECONDS = float(
+        os.environ.get("BREACH_CHECK_TIMEOUT_SECONDS", "2") or 2
+    )
+
     # --- Outbound email ----------------------------------------------------
     # Off by default, so development needs no credentials and sends nothing.
     # Without MAIL_HOST a reset link is written to the log instead of sent.
