@@ -41,15 +41,6 @@ def _require_user():
     return user, None
 
 
-def _client_ip():
-    # Only trust X-Forwarded-For when a proxy is known to be setting it, which
-    # is what ProxyFix below arranges. Otherwise a client could spoof it.
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.remote_addr
-
-
 # --------------------------------------------------------------------------
 # Email verification
 # --------------------------------------------------------------------------

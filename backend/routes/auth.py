@@ -160,8 +160,16 @@ def login():
     if user and password_ok:
         # One session row per authenticated device, so this login can be
         # revoked on its own later.
+        #
+        # request.remote_addr, never request.headers["X-Forwarded-For"]. Reading
+        # the header directly stored whatever the client sent, so a session row
+        # could be filed under any address the caller chose -- and that address is
+        # shown in the per-device list a user checks for suspicious logins.
+        # ProxyFix rewrites remote_addr from that header for exactly the
+        # configured number of hops, so it is correct with or without a proxy.
         session = user.start_session(
-            user_agent=request.headers.get("User-Agent"), ip_address=_client_ip()
+            user_agent=request.headers.get("User-Agent"),
+            ip_address=request.remote_addr,
         )
         db.session.commit()
 
@@ -184,15 +192,6 @@ def login():
         )
         return response, 200
     return jsonify({"msg": "Bad credentials"}), 401
-
-
-def _client_ip():
-    # X-Forwarded-For is only honoured because app.py installs ProxyFix for the
-    # configured number of proxies, so a direct client cannot forge it.
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.remote_addr
 
 
 def _session_claims(user, session_id):

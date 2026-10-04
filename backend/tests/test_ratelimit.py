@@ -3,20 +3,29 @@
 Flask-Limiter skips throttling when RATELIMIT_ENABLED is off or TESTING is set,
 so these tests enable it explicitly and use a fresh in-memory store each time.
 """
+import os
+
 import pytest
 
 from config import Config
+
+# Same source as tests/conftest.py. Read from the environment rather than
+# imported, because importing conftest as a module relies on it being an
+# importable package, which it is not declared to be.
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "sqlite://")
 
 
 class LimitedConfig(Config):
     """Tight limits so the tests need only a handful of requests.
 
     RATELIMIT_ENABLED is on, so throttling is genuinely exercised rather than
-    bypassed by a test-mode exemption.
+    bypassed by a test-mode exemption. Subclasses Config rather than the shared
+    TestConfig on purpose: TestConfig sets TESTING, and Flask-Limiter skips
+    throttling entirely when TESTING is set.
     """
 
     ENV = "development"
-    SQLALCHEMY_DATABASE_URI = "sqlite://"
+    SQLALCHEMY_DATABASE_URI = TEST_DATABASE_URL
     AUTO_CREATE_TABLES = False
     JWT_COOKIE_SECURE = False
     RATELIMIT_ENABLED = True
@@ -29,16 +38,34 @@ class LimitedConfig(Config):
 
 @pytest.fixture
 def limited_client():
+    """A second app, because RATELIMIT_ENABLED is latched at init_app.
+
+    Changing it on the shared app afterwards does not work: Flask-Limiter builds
+    and caches a limit object per view on first request, so toggling the flag
+    mid-run left the routes unthrottled and stopped the headers being injected.
+
+    A second app means a second engine. On in-memory SQLite that engine points at
+    a private, empty database, so the schema is created for it; against a real
+    server the schema already exists and is owned by conftest, so it is left
+    alone and only the rows are cleared.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
     from app import create_app
     from extensions import db
+    from tests.conftest import _empty_every_table
 
     application = create_app(LimitedConfig)
     with application.app_context():
         db.session.remove()
-        db.create_all()
+        if not sa_inspect(db.engine).has_table("user"):
+            db.create_all()
+        _empty_every_table()
+        db.session.commit()
         yield application.test_client()
         db.session.remove()
-        db.drop_all()
+        _empty_every_table()
+        db.session.commit()
 
 
 BAD_LOGIN = {"username": "ratetest", "password": "wrong-password"}

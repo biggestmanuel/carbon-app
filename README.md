@@ -289,7 +289,7 @@ factor snapshot, so mixed-region histories are reported correctly.
 
 ```bash
 cd backend
-python -m pytest tests -q        # 199 tests
+python -m pytest tests -q        # 222 tests
 ruff check .                    # lint
 
 cd frontend
@@ -299,11 +299,28 @@ npm run lint
 npm run build
 ```
 
+The suite runs against in-memory SQLite by default. Point `TEST_DATABASE_URL` at
+another engine to run the same tests there:
+
+```bash
+TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/carbon_test pytest tests -q
+```
+
+Deliberately not `DATABASE_URL`: the fixtures drop every table between tests, so
+sharing the name with the running app would let a test run destroy a real
+database. Setting `TEST_DATABASE_URL` has to be a deliberate act.
+
+The schema is built once per run and the rows are cleared between tests, which is
+why a full run takes minutes rather than the ~20 it took when every test
+recreated the schema.
+
 Backend tests live in `backend/tests/`. `test_regressions.py` is the important
 one: each test corresponds to a bug reproduced against an earlier revision of
 this code, so it documents behaviour that must not silently regress.
 `test_migrations.py` drives the real `flask db` CLI to prove a column can be
-widened on a populated database.
+widened on a populated database. `test_schema_parity.py` compares the schema
+`create_all()` produces against the one the migration chain produces, which is
+the gap that let a model drift from its migrations unnoticed.
 
 Frontend tests use Vitest and Testing Library. The pure input parsing lives in
 `src/lib/footprint.ts` and is tested there directly, because a DOM test cannot
@@ -315,22 +332,28 @@ stays type-checked.
 
 `.github/workflows/ci.yml` runs on every push and pull request to `main`:
 
-- **Backend (sqlite)**: `ruff check`, `flask db check`, pytest.
-- **Backend (postgres)**: the migrations and the suite against Postgres 16.
-- **Frontend**: lint, `tsc --noEmit`, tests, build.
+- **Backend (sqlite)**: `ruff check`, `pip-audit`, `flask db check`, pytest.
+- **Backend (postgres)**: the migrations and the full suite against Postgres 16.
+- **Frontend**: lint, `npm audit`, `tsc --noEmit`, tests, build.
 
-Two of these steps exist because of specific failures this project had:
+Four of these steps exist because of specific failures this project had:
 
 `flask db check` autogenerates against a migrated database and fails if the
 models have drifted from the migration history, catching a model edited without
 a matching revision, which only breaks once deployed.
 
-The Postgres job exists because SQLite tolerates faults Postgres rejects. The
-whole migration chain originally passed on SQLite and failed on Postgres three
-times: unquoted `user` (a reserved word), `= 0` against a boolean column, and
-the driver needing a password. `tsc --noEmit` is separate from `npm run build`
-because esbuild strips types without checking them, so a successful build proves
-nothing about type safety.
+The Postgres job runs the *whole* suite, not just the migrations. It originally
+did not: `conftest.py` hardcoded `SQLALCHEMY_DATABASE_URI = "sqlite://"`, which
+overrode `DATABASE_URL`, so 199 tests passed on SQLite inside a job named
+"Postgres". The fixture now reads `TEST_DATABASE_URL`. Three faults had already
+slipped through for exactly that reason -- unquoted `user` (a reserved word),
+`= 0` against a boolean column, and the driver needing a password.
+
+`tsc --noEmit` is separate from `npm run build` because esbuild strips types
+without checking them, so a successful build proves nothing about type safety.
+
+Both audit steps exist because "0 known vulnerabilities" was a claim in a commit
+message rather than anything enforced.
 
 ## Deployment
 

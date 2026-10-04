@@ -38,6 +38,13 @@ jobs:
       - name: Lint
         run: ruff check .
 
+      - name: Dependency audit
+        # pip-audit queries the PyPI advisory database, so it catches a known CVE
+        # in a pinned version rather than trusting the pin.
+        run: |
+          python -m pip install --upgrade pip-audit
+          pip-audit -r requirements.txt -r requirements-prod.txt
+
       - name: Check migrations are up to date with the models
         # A model edited without a matching revision fails at runtime on an
         # existing database, which is exactly the failure this prevents.
@@ -59,6 +66,10 @@ jobs:
     # The sqlite job proves the schema applies to an empty file. This one proves
     # it also applies to Postgres, which is what production will actually use,
     # and that the queries work there rather than only on SQLite.
+    #
+    # This job earns its keep: three separate faults passed on SQLite and failed
+    # here -- an unquoted reserved word, an integer written to a boolean column,
+    # and a driver that requires a password.
     services:
       postgres:
         image: postgres:16
@@ -101,9 +112,12 @@ jobs:
           flask db check
 
       - name: Tests against Postgres
-        run: pytest tests -q
+        # TEST_DATABASE_URL, not DATABASE_URL: conftest.py reads the former
+        # because it drops every table between tests, and sharing the name with
+        # the running app would let a test run destroy a real database.
         env:
-          DATABASE_URL: postgresql+psycopg://carbon:carbon@localhost:5432/carbon_test
+          TEST_DATABASE_URL: postgresql+psycopg://carbon:carbon@localhost:5432/carbon_test
+        run: pytest tests -q
 
   frontend:
     name: Frontend
@@ -127,6 +141,12 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Dependency audit
+        # Everything including devDependencies, which is the basis of the
+        # "0 vulnerabilities" claim. --audit-level=high keeps a low-severity
+        # advisory from blocking a merge while still failing on anything serious.
+        run: npm audit --audit-level=high
 
       - name: Test
         run: npm test
