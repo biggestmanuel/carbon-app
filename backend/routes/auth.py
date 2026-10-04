@@ -18,7 +18,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from breached import is_breached
 from extensions import db, limiter, rate_limits_exempt
 from mail import send_password_reset, send_verification
-from models import User, UserSession
+from models import RecoveryCode, User, UserSession
 from passwords import generate_token, hash_password, hash_token
 
 auth_bp = Blueprint("auth", __name__)
@@ -189,40 +189,64 @@ def login():
     password_ok = check_password_hash(user.password_hash if user else _DUMMY_HASH, password)
 
     if user and password_ok:
-        # One session row per authenticated device, so this login can be
-        # revoked on its own later.
-        #
-        # request.remote_addr, never request.headers["X-Forwarded-For"]. Reading
-        # the header directly stored whatever the client sent, so a session row
-        # could be filed under any address the caller chose -- and that address is
-        # shown in the per-device list a user checks for suspicious logins.
-        # ProxyFix rewrites remote_addr from that header for exactly the
-        # configured number of hops, so it is correct with or without a proxy.
-        session = user.start_session(
-            user_agent=request.headers.get("User-Agent"),
-            ip_address=request.remote_addr,
-        )
-        db.session.commit()
+        # A correct password is only half a login once a second factor is on.
+        # No session row and no cookies are issued here: the caller gets a short
+        # pending token, and routes/mfa.py mints the real session only after a
+        # code verifies. Returning the usual success body in this state would be
+        # the worst outcome, because a client that ignored `mfa_required` would
+        # believe it was logged in while holding nothing usable.
+        if user.requires_totp():
+            from routes.mfa import create_pending_token
 
-        # Tokens go into httpOnly cookies, never into the JSON body, so page
-        # scripts and XSS payloads cannot read them out of localStorage.
+            return jsonify({
+                "msg": "Second factor required",
+                "mfa_required": True,
+                "pending_token": create_pending_token(user),
+            }), 200
+
         response = jsonify({
             "msg": "Logged in",
             "username": user.username,
             "email_verified": bool(user.email_verified),
         })
-        set_access_cookies(
-            response,
-            _access_token_for(user, session.id),
-            max_age=int(current_app.config["JWT_ACCESS_TOKEN_EXPIRES"].total_seconds()),
-        )
-        set_refresh_cookies(
-            response,
-            _refresh_token_for(user, session.id),
-            max_age=int(current_app.config["JWT_REFRESH_TOKEN_EXPIRES"].total_seconds()),
-        )
+        establish_session(response, user, request)
+        db.session.commit()
         return response, 200
     return jsonify({"msg": "Bad credentials"}), 401
+
+
+def establish_session(response, user, req=None):
+    """Attach session cookies for a freshly authenticated user.
+
+    One place that knows how a session is minted, so the password step and the
+    second-factor step cannot drift apart. The caller commits: the session row and
+    the cookies must not disagree about whether the login happened.
+
+    request.remote_addr, never request.headers["X-Forwarded-For"]. Reading the
+    header directly stored whatever the client sent, so a session row could be
+    filed under any address the caller chose -- and that address is shown in the
+    per-device list a user checks for suspicious logins. ProxyFix rewrites
+    remote_addr from that header for exactly the configured number of hops, so it
+    is correct with or without a proxy.
+    """
+    req = req if req is not None else request
+
+    session = user.start_session(
+        user_agent=req.headers.get("User-Agent"),
+        ip_address=req.remote_addr,
+    )
+    max_age = int(current_app.config["JWT_ACCESS_TOKEN_EXPIRES"].total_seconds())
+    refresh_max_age = int(current_app.config["JWT_REFRESH_TOKEN_EXPIRES"].total_seconds())
+
+    # Tokens go into httpOnly cookies, never into the JSON body, so page scripts
+    # and XSS payloads cannot read them out of localStorage.
+    set_access_cookies(
+        response, _access_token_for(user, session.id), max_age=max_age
+    )
+    set_refresh_cookies(
+        response, _refresh_token_for(user, session.id), max_age=refresh_max_age
+    )
+    return session
 
 
 def _session_claims(user, session_id):
@@ -361,6 +385,11 @@ def reset_password():
     breached = _breached_password_error(new_password)
     if breached:
         return jsonify({"msg": breached, "errors": {"password": breached}}), 400
+
+    # Recovery codes are invalidated alongside the sessions. They are the other
+    # way in, and a reset the user did not initiate would otherwise leave a
+    # working bypass on an account the attacker does not control.
+    RecoveryCode.query.filter_by(user_id=user.id).delete()
 
     user.apply_new_password(hash_password(new_password))
     db.session.commit()

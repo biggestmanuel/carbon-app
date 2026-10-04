@@ -51,10 +51,12 @@ def create_app(config_object=Config):
     from routes.account import account_bp
     from routes.auth import auth_bp
     from routes.footprint import footprint_bp
+    from routes.mfa import mfa_bp
 
     app.register_blueprint(auth_bp, url_prefix="/auth")
     app.register_blueprint(account_bp, url_prefix="/account")
     app.register_blueprint(footprint_bp, url_prefix="/footprint")
+    app.register_blueprint(mfa_bp, url_prefix="/auth/mfa")
 
     # Dev escape hatch only. create_all() cannot alter existing tables, so the
     # normal path is `flask db upgrade`.
@@ -93,6 +95,10 @@ def _register_error_handlers(app):
 
         session_id = payload.get(app.config["JWT_SESSION_ID_CLAIM"])
         if not session_id:
+            # Covers a pending second-factor token. It is an access token so the
+            # client can hold it, but it is not a session: carrying no sid means
+            # it cannot be replayed against an authenticated endpoint, which is
+            # the property routes/mfa.py relies on when it decodes one.
             return True
         session = db.session.get(UserSession, session_id)
         if session is None or session.user_id != user_id:

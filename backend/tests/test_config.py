@@ -14,7 +14,7 @@ def restore_config():
     saved = {name: getattr(Config, name) for name in
              ("ENV", "SECRET_KEY", "JWT_SECRET_KEY", "AUTO_CREATE_TABLES",
               "JWT_COOKIE_SECURE", "CORS_ORIGINS", "MAIL_ENABLED", "MAIL_HOST",
-              "RESET_REQUIRES_VERIFIED_EMAIL")}
+              "RESET_REQUIRES_VERIFIED_EMAIL", "TOTP_ENCRYPTION_KEY")}
     yield
     for name, value in saved.items():
         setattr(Config, name, value)
@@ -100,6 +100,34 @@ def test_production_with_wildcard_cors_is_rejected():
     with pytest.raises(RuntimeError) as exc:
         Config.validate()
     assert "CORS_ORIGINS" in str(exc.value)
+
+
+def test_a_malformed_totp_key_is_rejected():
+    # Set but wrong cannot decrypt anything, so 2FA would fail for every user
+    # while looking configured. That is a mistake rather than a choice.
+    _apply(_GoodProd)
+    Config.TOTP_ENCRYPTION_KEY = "too-short"
+    with pytest.raises(RuntimeError) as exc:
+        Config.validate()
+    assert "TOTP_ENCRYPTION_KEY" in str(exc.value)
+    # And the message says how to fix it, since an operator hitting this at boot
+    # has no other way to know the expected format.
+    assert "Fernet" in str(exc.value)
+
+
+def test_a_valid_totp_key_passes():
+    _apply(_GoodProd)
+    Config.TOTP_ENCRYPTION_KEY = b"YVGGsJ3cy-WpnsE3YfNtl84-mzfpW9kTcuD0y6mqNjA="
+    Config.validate()
+
+
+def test_an_absent_totp_key_is_allowed():
+    # 2FA is opt-in. A deployment with no key is a working deployment that cannot
+    # offer the feature, and refusing to start would break every existing one for
+    # a capability nobody asked for. The enrolment endpoint refuses cleanly.
+    _apply(_GoodProd)
+    Config.TOTP_ENCRYPTION_KEY = ""
+    Config.validate()
 
 
 def test_mail_enabled_without_host_is_rejected():

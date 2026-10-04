@@ -115,6 +115,12 @@ class Config:
     RESET_RATE_LIMIT = os.environ.get("RESET_RATE_LIMIT", "5 per hour")
     # Deletion is irreversible, so it is deliberately hard to trigger.
     DELETE_RATE_LIMIT = os.environ.get("DELETE_RATE_LIMIT", "3 per hour")
+    # Tighter than login: six digits is a million possibilities, so an unlimited
+    # verify endpoint is brute-forceable even when the password was correct.
+    TOTP_RATE_LIMIT = os.environ.get("TOTP_RATE_LIMIT", "5 per minute")
+    # Enrolment and removal change the security posture of an account, so they
+    # are rate limited separately from the verify endpoint.
+    TOTP_MANAGE_RATE_LIMIT = os.environ.get("TOTP_MANAGE_RATE_LIMIT", "5 per hour")
 
     # --- Password reset ----------------------------------------------------
     PASSWORD_RESET_TTL_MINUTES = _int_env("PASSWORD_RESET_TTL_MINUTES", 30)
@@ -131,6 +137,36 @@ class Config:
     # How often a session's last_seen_at is written, to avoid a DB write on
     # every single request.
     SESSION_TOUCH_INTERVAL_SECONDS = _int_env("SESSION_TOUCH_INTERVAL_SECONDS", 300)
+
+    # --- Second factor (TOTP) ----------------------------------------------
+    # Encrypts TOTP seeds at rest. A seed cannot be hashed, because verification
+    # needs the original bytes, so an unencrypted column would let anyone holding
+    # a database backup mint valid codes for every account.
+    #
+    # Separate from SECRET_KEY on purpose: one key reused for two jobs means a bug
+    # in either leaks both, and rotating the session secret would silently lock
+    # everyone out of their authenticators.
+    #
+    # Generated with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    #
+    # Left empty by default, and validate() does NOT require it: 2FA is opt-in, so
+    # a deployment without a key is a working deployment that simply cannot offer
+    # the feature. POST /auth/mfa/start then answers 503 with this same message
+    # rather than storing a seed it cannot encrypt. A key that is present but
+    # malformed is a different matter -- that is a mistake, and it is rejected.
+    TOTP_ENCRYPTION_KEY = os.environ.get("TOTP_ENCRYPTION_KEY", "")
+    TOTP_ISSUER = os.environ.get("TOTP_ISSUER", "carbon-app")
+    # Six digits and thirty seconds are what every authenticator app assumes.
+    # Changing either breaks every enrolled device, so they are not configurable.
+    TOTP_DIGITS = 6
+    TOTP_PERIOD_SECONDS = 30
+    # How many single-use codes are issued at enrolment.
+    TOTP_RECOVERY_CODES = _int_env("TOTP_RECOVERY_CODES", 10)
+    # A second factor with a stale device can lock the owner out, so turning it
+    # off requires the password as well as a code. Disabling it revokes every
+    # session, so this is the recovery path when the authenticator is lost.
+    TOTP_DISABLE_REQUIRES_PASSWORD = _bool_env("TOTP_DISABLE_REQUIRES_PASSWORD", True)
 
     # --- Password hygiene ---------------------------------------------------
     # Checks new and reset passwords against the Have I Been Pwned corpus using
@@ -188,6 +224,21 @@ class Config:
                 problems.append(
                     "MAIL_HOST is set but MAIL_ENABLED is off; reset links would only reach the log"
                 )
+            if cls.TOTP_ENCRYPTION_KEY:
+                # A malformed key is a mistake rather than a choice: it cannot
+                # decrypt anything, so 2FA would fail for every user while
+                # looking configured. An absent key is allowed, since 2FA is
+                # opt-in and the enrolment endpoint refuses cleanly without one.
+                try:
+                    from cryptography.fernet import Fernet
+
+                    Fernet(cls.TOTP_ENCRYPTION_KEY)
+                except (ImportError, ValueError, TypeError):
+                    problems.append(
+                        "TOTP_ENCRYPTION_KEY is set but is not a valid Fernet key; generate one "
+                        'with: python -c "from cryptography.fernet import Fernet; '
+                        'print(Fernet.generate_key().decode())"'
+                    )
             if cls.RESET_REQUIRES_VERIFIED_EMAIL and not cls.MAIL_ENABLED:
                 problems.append(
                     "RESET_REQUIRES_VERIFIED_EMAIL is on but MAIL_ENABLED is off, so no address "

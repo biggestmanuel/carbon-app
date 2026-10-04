@@ -27,7 +27,11 @@ BASE_PROD = {
     "RATELIMIT_STORAGE_URI": "redis://localhost:6379/0",
 }
 
-MANAGED = tuple(BASE_PROD)
+MANAGED = tuple(BASE_PROD) + ("TOTP_ENCRYPTION_KEY",)
+
+# 32 url-safe base64 bytes. Present so a production validation here fails only for
+# the reason each test is actually about.
+VALID_FERNET_KEY = b"YVGGsJ3cy-WpnsE3YfNtl84-mzfpW9kTcuD0y6mqNjA="
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +48,11 @@ def restore(monkeypatch):
 
 
 def _apply(**overrides):
-    for name, value in {**BASE_PROD, **overrides}.items():
+    # A valid key, so these tests isolate the worker-count check. Without it
+    # every production validation would fail for an unrelated reason and the
+    # limiter assertions would never be reached.
+    values = {"TOTP_ENCRYPTION_KEY": VALID_FERNET_KEY, **BASE_PROD, **overrides}
+    for name, value in values.items():
         setattr(Config, name, value)
 
 

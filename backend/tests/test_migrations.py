@@ -177,7 +177,10 @@ def test_the_history_index_survives_an_upgrade_and_a_downgrade(migration_env):
     }
     conn.close()
 
-    flask_db("downgrade", "--", "-1", env=env)
+    # The revision before the index was added, named directly rather than
+    # relatively: a relative step depends on which revision is currently head,
+    # so this test silently changes meaning every time another migration lands.
+    flask_db("downgrade", "d37d942354df", env=env)
     conn = sqlite3.connect(db_path)
     assert "ix_footprint_user_created" not in {
         r[1] for r in conn.execute("PRAGMA index_list('footprint')")
@@ -189,9 +192,7 @@ def test_adding_the_index_does_not_rebuild_the_table(migration_env):
     """An index is instant on a populated table; a table rewrite would not be."""
     env, db_path = migration_env
     flask_db("upgrade", "head", env=env)
-    # `--` stops Click parsing the leading dash, which Alembic reads as a
-    # relative revision step.
-    flask_db("downgrade", "--", "-1", env=env)
+    flask_db("downgrade", "d37d942354df", env=env)
 
     conn = sqlite3.connect(db_path)
     # updated_at is NOT NULL by this revision, and email_verified has no server
@@ -216,6 +217,59 @@ def test_adding_the_index_does_not_rebuild_the_table(migration_env):
     conn.close()
     # Adding an index must not have touched the data it indexes.
     assert row == [("fr", 9.9)]
+
+
+def test_the_two_factor_migration_applies_to_a_populated_table(migration_env):
+    """Existing users must end up with 2FA off, not a constraint violation.
+
+    totp_enabled is NOT NULL, so adding it without a server default fails on any
+    table that already has rows. SQLite rebuilds the table during the ALTER and
+    Postgres rejects the statement outright.
+    """
+    env, db_path = migration_env
+    # The parent revision, named directly rather than with alembic's "^" suffix:
+    # that suffix is only understood by `downgrade`.
+    flask_db("upgrade", "830e130da68c", env=env)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        'INSERT INTO user (username, password_hash, created_at, updated_at, '
+        "email_verified, token_version) VALUES (?, ?, ?, ?, ?, ?)",
+        ("pre-existing", "x", "2026-01-01 00:00:00", "2026-01-01 00:00:00", 0, 1),
+    )
+    conn.commit()
+    conn.close()
+
+    flask_db("upgrade", "head", env=env)
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT totp_enabled, totp_secret FROM user WHERE username = 'pre-existing'"
+    ).fetchone()
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    conn.close()
+
+    # The pre-existing account is intact, and off.
+    assert row == (0, None)
+    assert "recovery_code" in tables
+
+
+def test_the_two_factor_migration_rolls_back(migration_env):
+    env, db_path = migration_env
+    flask_db("upgrade", "head", env=env)
+
+    conn = sqlite3.connect(db_path)
+    assert "recovery_code" in {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    conn.close()
+
+    flask_db("downgrade", "830e130da68c", env=env)
+
+    conn = sqlite3.connect(db_path)
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    conn.close()
+    assert "recovery_code" not in tables
 
 
 def test_create_all_is_disabled_by_default(migration_env):

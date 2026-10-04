@@ -7,6 +7,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import Config  # noqa: E402
+from totp import current_code  # noqa: E402
 
 # The suite runs against whatever TEST_DATABASE_URL names, so the Postgres CI
 # job exercises the same tests on the engine production uses.
@@ -39,6 +40,82 @@ class TestConfig(Config):
     # depend on someone else's availability, and "correct-horse" is genuinely in
     # that corpus, so leaving this on made every registration fail for real.
     BREACH_CHECK_ENABLED = False
+
+    # A fixed key so the TOTP tests can assert on ciphertext without depending on
+    # a value generated per run. Not a real deployment key: tests only ever
+    # encrypt and decrypt within one process, and this string is in the repo.
+    # A valid Fernet key: 32 url-safe base64-encoded bytes, which is 44
+    # characters with one '=' of padding. A test asserting that a plaintext seed
+    # is *not* in the column needs a working key, not a plausible-looking string.
+    TOTP_ENCRYPTION_KEY = b"YVGGsJ3cy-WpnsE3YfNtl84-mzfpW9kTcuD0y6mqNjA="
+    TOTP_RECOVERY_CODES = 10
+
+
+@pytest.fixture
+def totp_key():
+    """Assert a ciphertext is encrypted, using the suite's fixed key.
+
+    Decrypts rather than pattern-matching the stored string: the property worth
+    protecting is that the plaintext is recoverable only with the key, and a
+    decode is the only check that actually demonstrates it.
+    """
+    from cryptography.fernet import Fernet
+
+    from tests.conftest import TestConfig
+
+    return Fernet(TestConfig.TOTP_ENCRYPTION_KEY)
+
+
+@pytest.fixture
+def enroll_mfa(client):
+    """Turn 2FA on for the logged-in user and return (secret, recovery_codes).
+
+    Drives the real endpoints rather than writing the row directly, so the tests
+    that use it also cover the API surface they are about.
+    """
+    def _enroll():
+        start = client.get("/auth/mfa/start")
+        assert start.status_code == 200, start.get_json()
+        secret = start.get_json()["secret"]
+
+        confirm = client.post("/auth/mfa/confirm", json={
+            "secret": secret, "code": current_code(secret),
+        })
+        assert confirm.status_code == 200, confirm.get_json()
+        return secret, confirm.get_json()["recovery_codes"]
+
+    return _enroll
+
+
+@pytest.fixture
+def login(client):
+    """POST /auth/login and return the response, whatever shape it takes."""
+    def _login(username="alice", password="correct-horse"):
+        return client.post("/auth/login", json={"username": username, "password": password})
+
+    return _login
+
+
+@pytest.fixture
+def enable_totp(client, auth_headers, enroll_mfa, login):
+    """An enrolled account, with a helper to complete the second login step."""
+    def _setup(password="correct-horse"):
+        auth_headers(password=password)
+        secret, recovery_codes = enroll_mfa()
+        return secret, recovery_codes
+
+    return _setup
+
+
+@pytest.fixture
+def finish_mfa_login(client):
+    """Complete a pending login with a code."""
+    def _finish(pending_token, code):
+        return client.post("/auth/mfa/check", json={
+            "pending_token": pending_token, "code": code,
+        })
+
+    return _finish
 
 
 def _empty_every_table():

@@ -9,6 +9,13 @@ Flask-Limiter==4.1.1
 Werkzeug==3.1.8
 python-dotenv==1.2.2
 
+# Encrypts TOTP seeds at rest. A TOTP seed cannot be hashed (verification needs
+# the original bytes), so without encryption a leaked database yields working
+# codes for every enrolled account. Fernet is authenticated encryption, so a
+# tampered ciphertext fails to decrypt rather than verifying against
+# attacker-chosen codes.
+cryptography==50.0.0
+
 # Testing
 pytest==9.1.1
 ruff==0.16.10

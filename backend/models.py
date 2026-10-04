@@ -74,6 +74,16 @@ class User(db.Model):
         cascade="all, delete-orphan",
         passive_deletes=False,
     )
+    # Orphaned by the ORM for the same reason as the two above, and on the same
+    # grounds: SQLite ignores ON DELETE CASCADE unless foreign keys are switched
+    # on per connection, so relying on the database would leave recovery codes
+    # behind after an account deletion.
+    recovery_codes = db.relationship(
+        "RecoveryCode",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=False,
+    )
 
     # Reset tokens are stored hashed and single-use: the row is cleared the
     # moment the password changes.
@@ -91,6 +101,21 @@ class User(db.Model):
     email_verified = db.Column(db.Boolean, nullable=False, default=False)
     email_verification_token_hash = db.Column(db.String(64), nullable=True)
     email_verification_sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    # --- Second factor (TOTP) ----------------------------------------------
+    # The seed is encrypted at rest rather than hashed: verification needs the
+    # original bytes, so a one-way function is not an option, and a plaintext seed
+    # in a leaked database would let an attacker mint valid codes for every
+    # account. See mfa.py.
+    totp_secret = db.Column(db.Text, nullable=True)
+    totp_enabled = db.Column(db.Boolean, nullable=False, default=False)
+    # The time step of the last accepted code, so a code cannot be replayed
+    # inside its own validity window. Without this a code shoulder-surfed off a
+    # screen stays usable for another 30 seconds.
+    totp_last_counter = db.Column(db.BigInteger, nullable=True)
+    # Set when 2FA is switched on or a recovery code is used, so the session list
+    # can tell a user when to re-check their other devices.
+    totp_changed_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     def set_password(self, password):
         # scrypt, which is Werkzeug's default. It is memory-hard, so it resists
@@ -124,7 +149,19 @@ class User(db.Model):
         payload["email_verified"] = bool(self.email_verified)
         if self.email:
             payload["email"] = _mask_email(self.email)
+        # Enough for the UI to show and disable 2FA. Never the seed, never a
+        # count of remaining recovery codes as a standalone figure.
+        payload["totp_enabled"] = self.requires_totp()
+        payload["recovery_codes_remaining"] = self.recovery_codes_remaining()
         return payload
+
+    def recovery_codes_remaining(self):
+        """Unused recovery codes. 0 for a user who never enrolled."""
+        from models import RecoveryCode
+
+        if not self.totp_enabled:
+            return 0
+        return RecoveryCode.query.filter_by(user_id=self.id, used_at=None).count()
 
     def request_password_reset(self, token_hash, now=None):
         self.password_reset_token_hash = token_hash
@@ -153,6 +190,54 @@ class User(db.Model):
         self.email_verified = True
         self.email_verification_token_hash = None
         self.email_verification_sent_at = None
+
+    def requires_totp(self):
+        """Whether a correct password still needs a second factor.
+
+        Both the flag and a stored secret must be present. They are set together,
+        but a half-written row from an interrupted enrolment would otherwise lock
+        the owner out of their own account with no way back.
+        """
+        return bool(self.totp_enabled and self.totp_secret)
+
+    def totp_secret_plaintext(self):
+        """The decrypted base32 seed, or None when it cannot be read."""
+        from mfa import decrypt
+
+        return decrypt(self.totp_secret)
+
+    def consume_totp_counter(self, counter):
+        """Record a code as spent.
+
+        Only advances the stored value: a code from an earlier step must not be
+        able to walk the marker backwards and become replayable again.
+        """
+        if counter is None:
+            return
+        if self.totp_last_counter is None or counter > self.totp_last_counter:
+            self.totp_last_counter = counter
+
+    def enable_totp(self, encrypted_secret, now=None):
+        """Arm the second factor. Enrolment is confirmed separately."""
+        self.totp_secret = encrypted_secret
+        self.totp_enabled = True
+        self.totp_last_counter = None
+        self.totp_changed_at = now or datetime.now(UTC)
+
+    def disable_totp(self):
+        """Turn the second factor off and forget the seed.
+
+        Also bumps token_version, which is what makes the change take effect on
+        sessions that are already authenticated: without it, an attacker holding a
+        refresh cookie keeps access after the owner adds 2FA.
+        """
+        self.totp_secret = None
+        self.totp_enabled = False
+        self.totp_last_counter = None
+        self.totp_changed_at = datetime.now(UTC)
+        self.token_version = (self.token_version or 1) + 1
+        self.revoke_sessions()
+        RecoveryCode.query.filter_by(user_id=self.id).delete()
 
     def can_reset_password(self):
         """Only a confirmed address can receive a reset link.
@@ -348,6 +433,50 @@ def describe_session(user_agent):
     if operating_system and device != "Unknown device":
         return f"{device} on {operating_system}"
     return device
+
+
+class RecoveryCode(db.Model):
+    """One single-use code for logging in without the authenticator.
+
+    Stored hashed, like the reset token: a database leak must not hand over a
+    working second factor. `used_at` is set on redemption rather than deleting the
+    row, so an exhausted account can tell "all ten used" from "never had any" and
+    so reuse can be counted.
+    """
+
+    __tablename__ = "recovery_code"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    code_hash = db.Column(db.String(64), nullable=False)
+    used_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    user = db.relationship("User", back_populates="recovery_codes")
+
+    @property
+    def is_used(self):
+        return self.used_at is not None
+
+    def redeem(self, now=None):
+        """Mark spent. Returns False if it had already been used."""
+        if self.is_used:
+            return False
+        self.used_at = now or datetime.now(UTC)
+        return True
+
+    def __repr__(self):
+        state = "used" if self.is_used else "unused"
+        return f"<RecoveryCode {self.id} user={self.user_id} {state}>"
 
 
 class Footprint(db.Model):
