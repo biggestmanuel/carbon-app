@@ -27,6 +27,14 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# --- Playwright (real-browser layout tests) ---
+# Screenshots, traces and HTML reports from a failed run. Regenerated on demand,
+# and large enough that committing one by accident is a nuisance.
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/.cache/ms-playwright/
+
 # --- Editor / OS ---
 .vscode/
 .idea/

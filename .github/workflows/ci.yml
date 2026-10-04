@@ -156,3 +156,48 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  layout:
+    name: Layout (real browser)
+    runs-on: ubuntu-latest
+
+    # A separate job because it needs a browser download and a live server, and
+    # failing the fast checks on that startup cost would be misleading.
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install the browser
+        # Only chromium: the assertions are about CSS layout, which every engine
+        # here resolves identically. A cross-browser matrix would multiply the
+        # download time to test something these tests do not depend on.
+        run: npx playwright install --with-deps chromium
+
+      - name: Layout tests
+        # The API is stubbed, so this needs no backend and no database. The
+        # webServer block builds the frontend and serves it itself.
+        run: npm run test:e2e
+
+      - name: Upload the failure report
+        # Traces and screenshots are the only useful output when a layout
+        # assertion fails on a machine you do not have.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+          retention-days: 7

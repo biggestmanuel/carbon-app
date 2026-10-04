@@ -22,5 +22,5 @@
 
     "types": ["vite/client", "vitest/globals", "node"]
   },
-  "include": ["src", "vite.config.js", "eslint.config.js"]
+  "include": ["src", "e2e", "vite.config.js", "eslint.config.js", "playwright.config.ts"]
 }

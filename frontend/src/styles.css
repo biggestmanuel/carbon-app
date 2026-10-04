@@ -40,16 +40,22 @@ h2 { font-size: 1.1rem; margin: 0 0 0.75rem; }
   margin-bottom: 1rem;
 }
 
+/* min() matters here. A bare minmax(320px, 1fr) sets a hard floor on the track
+   width, and a grid track never shrinks below its minimum: at a 320px viewport
+   the content box is 280px after .app's padding, the track stayed 320px, and
+   the cards spilled 20px past the right edge. min(320px, 100%) keeps the 320px
+   target on a wide screen while letting the track shrink to what it actually
+   has on a narrow one. */
 .columns {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   gap: 1rem;
   align-items: start;
 }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
   gap: 0.75rem;
   margin-bottom: 1rem;
 }

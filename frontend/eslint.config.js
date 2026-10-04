@@ -52,6 +52,21 @@ export default [
   },
 
   {
+    // Browser tests: Node for process and the Playwright runner, browser for the
+    // DOM the page.evaluate callbacks touch. They legitimately use both, so
+    // neither environment is excluded.
+    files: ["e2e/**/*.ts", "playwright.config.ts"],
+    languageOptions: { globals: { ...globals.node, ...globals.browser } },
+    rules: {
+      // Nothing here is React. The Playwright fixture callback is named `use`
+      // because that is the fixture contract, and the rules-of-hooks plugin reads
+      // that name as a hook call.
+      "react-hooks/rules-of-hooks": "off",
+      "react-refresh/only-export-components": "off",
+    },
+  },
+
+  {
     // Config files stay plain JS so Node can load them without a TS runtime.
     files: ["*.config.js", "eslint.config.js"],
     languageOptions: { globals: { ...globals.node } },
