@@ -5,6 +5,7 @@ import Summary from "./Summary";
 import HistoryList from "./HistoryList";
 import Sessions from "./Sessions";
 import AccountSettings from "./AccountSettings";
+import MfaSettings from "./MfaSettings";
 import VerifyEmail from "./VerifyEmail";
 
 interface DashboardProps {
@@ -68,7 +69,15 @@ function Dashboard({
 
       <Sessions refreshKey={refreshKey} />
 
-      {showSettings && <AccountSettings onDeleted={onAccountDeleted} />}
+      {showSettings && (
+        <>
+          {/* Disabling 2FA signs out every device, including this one, so the
+              app has to be told rather than left showing a dashboard whose
+              cookies no longer work. */}
+          <MfaSettings onDisabled={onAccountDeleted} />
+          <AccountSettings onDeleted={onAccountDeleted} />
+        </>
+      )}
     </div>
   );
 }

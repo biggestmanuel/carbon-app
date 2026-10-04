@@ -11,11 +11,15 @@
  * box geometry, at the widths where the layout is under most pressure.
  */
 import {
+  MFA_SETUP,
+  MFA_SETUP_PATTERN,
+  MFA_STATUS_PATTERN,
   computed,
   expect,
   horizontalOverflow,
   lineHeight,
   scrollsHorizontally,
+  stubApi,
   stubSignedOut,
   test,
   wrappedLines,
@@ -190,6 +194,53 @@ test.describe("other pages", () => {
 
     const offenders = await horizontalOverflow(page);
     expect(offenders, `these overflow: ${offenders.join("; ")}`).toEqual([]);
+  });
+
+  test("the settings panel and the second-factor panel do not overflow", async ({
+    page,
+  }) => {
+    // The 2FA panel is the widest new content in the app: a 32-character seed and
+    // a 16-character recovery code per line, at 320px.
+    await page.setViewportSize({ width: 320, height: 720 });
+    await stubApi(page);
+    await page.goto("/");
+    await expect(page.getByRole("table")).toBeVisible();
+
+    // Registered after stubApi, so it wins: Playwright runs the last matching
+    // route. Without this the catch-all would abort the settings panel's own
+    // calls and the 2FA panel would never render.
+    await page.route(MFA_SETUP_PATTERN, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(MFA_SETUP),
+      })
+    );
+    // Without this the status call is aborted by the catch-all, and the panel
+    // stays on "checking whether two-factor authentication is on" forever, so the
+    // button this test needs would never appear.
+    await page.route(MFA_STATUS_PATTERN, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ totp_enabled: false, recovery_codes_remaining: 0, changed_at: null }),
+      })
+    );
+
+    await page.getByRole("button", { name: /^settings$/i }).click();
+    await page.getByRole("button", { name: /set up two-factor/i }).click();
+
+    const secret = page.locator(".totp-secret code");
+    await expect(secret).toBeVisible();
+
+    const offenders = await horizontalOverflow(page);
+    expect(offenders, `these overflow: ${offenders.join("; ")}`).toEqual([]);
+
+    // A seed broken across two lines gets read back as two halves and typed
+    // wrong, which locks someone out of their own account.
+    expect(await secret.evaluate((node) => getComputedStyle(node).whiteSpace)).toBe(
+      "nowrap"
+    );
   });
 
   test("the longest button label fits at phone width", async ({ page }) => {

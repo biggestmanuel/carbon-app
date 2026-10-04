@@ -208,6 +208,57 @@ header h1 { margin: 0; }
 
 .big { font-size: 2rem; font-weight: 700; color: var(--accent); margin: 0.25rem 0; }
 
+/* --- Second factor ------------------------------------------------------ */
+
+/* Drawn locally by TotpQr. The reserved size means nothing shifts when the SVG
+   arrives, and the white background is what a scanner needs to find the edges. */
+.totp-qr {
+  background: #ffffff;
+  border-radius: 0.5rem;
+  display: block;
+  margin: 0.75rem 0;
+  padding: 0.25rem;
+}
+
+/* A 32-character base32 key is not readable in a proportional font, and this is
+   the one value a user may have to type by hand. */
+.totp-secret {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.totp-secret code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  font-size: 0.9rem;
+  /* One line whatever the width: wrapping a key across lines invites a typo
+     that locks someone out of their own account. */
+  overflow-x: auto;
+  padding: 0.4rem 0.6rem;
+  white-space: nowrap;
+}
+
+/* Each code on its own line, selectable as a block so they can be copied or
+   printed together. */
+.recovery-codes {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+}
+
+.recovery-codes li {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  margin-bottom: 0.35rem;
+  padding: 0.35rem 0.6rem;
+  user-select: all;
+}
+
 .breakdown { list-style: none; padding: 0; margin: 0.5rem 0 0; color: var(--muted); font-size: 0.875rem; }
 .breakdown li { padding: 0.1rem 0; }
 

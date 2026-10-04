@@ -7,7 +7,14 @@
  */
 import { vi } from "vitest";
 import type { Mock } from "vitest";
-import type { FactorsCatalogue, MeResponse, RegionOption } from "../types";
+import type {
+  FactorsCatalogue,
+  MeResponse,
+  MfaCheckResponse,
+  MfaSetupResponse,
+  MfaStatus,
+  RegionOption,
+} from "../types";
 
 export type ApiMock = {
   get: Mock;
@@ -53,6 +60,75 @@ export const ALICE: MeResponse = {
   has_email: true,
   email_verified: false,
   email: "a***e@example.com",
+};
+
+/** What /auth/mfa/start returns: a secret to scan or type into an app. */
+export const MFA_SETUP = {
+  secret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+  provisioning_uri:
+    "otpauth://totp/carbon-app%3Aalice?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP" +
+    "&issuer=carbon-app&algorithm=SHA1&digits=6&period=30",
+  issuer: "carbon-app",
+  digits: 6,
+  period: 30,
+};
+
+/** Stand-in recovery codes. Only ever shown once, so they live in the fixture. */
+export const RECOVERY_CODES = [
+  "A2B3C4D5E6F7G8H9",
+  "J9K8L7M6N5O4P3Q2",
+  "R1S2T3U4V5W6X7Y8",
+];
+
+/**
+ * The second-factor calls, mocked by name.
+ *
+ * These are named exports in api.ts that close over the axios instance, so
+ * replacing the instance in a test would not intercept them -- the component
+ * would call the live transport.
+ */
+export const verifySecondFactorMock = vi.fn<
+  (pendingToken: string, code: string) => Promise<MfaCheckResponse>
+>();
+export const startTotpSetupMock = vi.fn<() => Promise<MfaSetupResponse>>();
+export const confirmTotpSetupMock =
+  vi.fn<(secret: string, code: string) => Promise<{ msg: string; recovery_codes: string[] }>>();
+export const fetchMfaStatusMock = vi.fn<() => Promise<MfaStatus>>();
+export const disableTotpMock = vi.fn<(code: string, password: string) => Promise<void>>();
+export const regenerateRecoveryCodesMock = vi.fn<(password: string) => Promise<string[]>>();
+
+/** Put every 2FA mock back to a rejecting default between tests. */
+export function resetMfaMocks() {
+  verifySecondFactorMock.mockReset();
+  startTotpSetupMock.mockReset();
+  confirmTotpSetupMock.mockReset();
+  fetchMfaStatusMock.mockReset();
+  disableTotpMock.mockReset();
+  regenerateRecoveryCodesMock.mockReset();
+
+  fetchMfaStatusMock.mockResolvedValue(MFA_OFF);
+  startTotpSetupMock.mockResolvedValue(MFA_SETUP);
+  confirmTotpSetupMock.mockResolvedValue({ msg: "Two-factor authentication is on.", recovery_codes: RECOVERY_CODES });
+  verifySecondFactorMock.mockResolvedValue({
+    msg: "Logged in",
+    username: "alice",
+    email_verified: true,
+    second_factor: "totp",
+  });
+  regenerateRecoveryCodesMock.mockResolvedValue(RECOVERY_CODES);
+}
+
+/** The 2FA state, as /auth/mfa/status reports it. */
+export const MFA_ON: MfaStatus = {
+  totp_enabled: true,
+  recovery_codes_remaining: 10,
+  changed_at: "2026-03-01T09:00:00+00:00",
+};
+
+export const MFA_OFF: MfaStatus = {
+  totp_enabled: false,
+  recovery_codes_remaining: 0,
+  changed_at: null,
 };
 
 /**

@@ -145,6 +145,20 @@ export const test = base.extend<{ dashboard: Page }>({
   },
 });
 
+/** Exposed so specs can stub the 2FA endpoints the settings panel calls. */
+export const MFA_SETUP_PATTERN = /\/auth\/mfa\/start(\?|$)/;
+export const MFA_STATUS_PATTERN = /\/auth\/mfa\/status(\?|$)/;
+
+export const MFA_SETUP = {
+  secret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+  provisioning_uri:
+    "otpauth://totp/carbon-app%3Aalice?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP" +
+    "&issuer=carbon-app&algorithm=SHA1&digits=6&period=30",
+  issuer: "carbon-app",
+  digits: 6,
+  period: 30,
+};
+
 export { expect };
 
 /** The signed-out view: /auth/me says there is no session. */

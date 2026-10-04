@@ -104,12 +104,63 @@ export interface MeResponse {
   email_verified: boolean;
   /** Already masked by the backend. */
   email?: string;
+  /** Whether a second factor is armed. Never carries the seed itself. */
+  totp_enabled?: boolean;
+  /** Unused single-use codes left, so the UI can warn before there are none. */
+  recovery_codes_remaining?: number;
 }
 
+/**
+ * A completed login.
+ *
+ * Deliberately does NOT carry optional mfa fields: the two shapes are separate
+ * types (see MfaRequiredResponse) and Login branches on the union, so a missing
+ * property can never be misread as a false one.
+ */
 export interface LoginResponse {
   msg: string;
   username: string;
   email_verified: boolean;
+}
+
+/**
+ * The first half of a login, when a second factor is on.
+ *
+ * The password was correct but no session exists yet: the response carries a
+ * pending token and no cookies. A client that ignored `mfa_required` would
+ * believe it was signed in while holding nothing usable.
+ */
+export interface MfaRequiredResponse {
+  msg: string;
+  mfa_required: true;
+  /** Expires in five minutes, and the server refuses it as a session token. */
+  pending_token: string;
+}
+
+/** What POST /auth/mfa/start returns, to be scanned or typed into an app. */
+export interface MfaSetupResponse {
+  secret: string;
+  /** otpauth:// URI. An authenticator app reads this from a QR code. */
+  provisioning_uri: string;
+  issuer: string;
+  digits: number;
+  period: number;
+}
+
+/** The 2FA state, for the settings panel. */
+export interface MfaStatus {
+  totp_enabled: boolean;
+  recovery_codes_remaining: number;
+  changed_at: string | null;
+}
+
+/** The second half of a login, once a code has been accepted. */
+export interface MfaCheckResponse {
+  msg: string;
+  username: string;
+  email_verified: boolean;
+  /** "totp" or "recovery", so the UI can say the authenticator was not used. */
+  second_factor: "totp" | "recovery";
 }
 
 export interface SessionRow {

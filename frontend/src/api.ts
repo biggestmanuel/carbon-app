@@ -1,7 +1,13 @@
 import axios, { AxiosError } from "axios";
 import type { AxiosInstance, InternalAxiosRequestConfig } from "axios";
 import { API_BASE_URL } from "./config";
-import type { ApiErrorBody, MeResponse } from "./types";
+import type {
+  ApiErrorBody,
+  MeResponse,
+  MfaCheckResponse,
+  MfaSetupResponse,
+  MfaStatus,
+} from "./types";
 
 /** Marks a request the session-expiry handler should ignore. */
 interface FlaggedConfig extends InternalAxiosRequestConfig {
@@ -57,15 +63,74 @@ export async function fetchSession(): Promise<MeResponse> {
   return res.data;
 }
 
+/**
+ * Complete a login that needs a second factor.
+ *
+ * A separate function rather than a branch inside the login caller, because the
+ * two halves are genuinely different requests: this one needs a pending token
+ * rather than a password, and it is the only call that receives session cookies.
+ */
+export async function verifySecondFactor(
+  pendingToken: string,
+  code: string
+): Promise<MfaCheckResponse> {
+  const res = await api.post<MfaCheckResponse>("/auth/mfa/check", {
+    pending_token: pendingToken,
+    code,
+  });
+  return res.data;
+}
+
+/** Begin 2FA enrolment. Returns the secret to scan or type. */
+export async function startTotpSetup(): Promise<MfaSetupResponse> {
+  const res = await api.get<MfaSetupResponse>("/auth/mfa/start");
+  return res.data;
+}
+
+/** Turn 2FA on. The recovery codes in the response are the only copy. */
+export async function confirmTotpSetup(
+  secret: string,
+  code: string
+): Promise<{ msg: string; recovery_codes: string[] }> {
+  const res = await api.post<{ msg: string; recovery_codes: string[] }>(
+    "/auth/mfa/confirm",
+    { secret, code }
+  );
+  return res.data;
+}
+
+export async function fetchMfaStatus(): Promise<MfaStatus> {
+  const res = await api.get<MfaStatus>("/auth/mfa/status");
+  return res.data;
+}
+
+/** Turn 2FA off. Signs every device out, so the caller should say so. */
+export async function disableTotp(code: string, password: string): Promise<void> {
+  await api.post("/auth/mfa/disable", { code, password });
+}
+
+/** Issue a fresh set of recovery codes, invalidating the old one. */
+export async function regenerateRecoveryCodes(password: string): Promise<string[]> {
+  const res = await api.post<{ recovery_codes: string[] }>("/auth/mfa/recovery-codes", {
+    password,
+  });
+  return res.data.recovery_codes;
+}
+
 api.interceptors.response.use(
   (response) => response,
   async (error: AxiosError<ApiErrorBody>) => {
     const status = error.response?.status;
     const config = (error.config ?? {}) as FlaggedConfig;
     const url = config.url ?? "";
+    // /auth/mfa/* is in this list for a specific reason: a wrong code answers 401,
+    // and the refresh-and-retry below would fire on it, replacing "that code is
+    // not valid" with an eventual session-expired message. Retrying an
+    // authentication attempt is never the right move.
     const isAuthEntry = ["/auth/login", "/auth/register", "/auth/refresh"].some((path) =>
       url.startsWith(path)
     );
+    const isMfaAttempt = url.startsWith("/auth/mfa/");
 
     // 401 here means the access cookie expired but the refresh cookie may
     // still be good, so try once before dropping the session.
@@ -74,7 +139,7 @@ api.interceptors.response.use(
     // answering 401 after a *successful* refresh (revoked session, deleted
     // user, clock skew), an unguarded retry recurses until the tab runs out of
     // memory. _retried marks the replay so only one attempt happens.
-    if (status === 401 && !isAuthEntry && !config._retried) {
+    if (status === 401 && !isAuthEntry && !isMfaAttempt && !config._retried) {
       try {
         await refreshAccessToken();
         // Only the request's own fields are carried over. Spreading the whole
