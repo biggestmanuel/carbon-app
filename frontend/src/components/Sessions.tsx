@@ -66,6 +66,10 @@ function Sessions({ refreshKey }: SessionsProps) {
   return (
     <div className="card">
       <h2>Active sessions</h2>
+      <p className="hint">
+        Revoke anything you do not recognise. A session marked new means this
+        account had not been used from that browser or address before.
+      </p>
       {error && (
         <p className="error" role="alert">
           {error}
@@ -75,8 +79,17 @@ function Sessions({ refreshKey }: SessionsProps) {
 
       <ul className="breakdown">
         {sessions.map((s) => (
-          <li key={s.id}>
+          <li key={s.id} className={s.unrecognised ? "session-unrecognised" : undefined}>
             <strong>{s.label}</strong>
+            {s.unrecognised && (
+              <span className="badge">
+                {s.new_location && s.new_device
+                  ? "new device and location"
+                  : s.new_location
+                    ? "new location"
+                    : "new device"}
+              </span>
+            )}
             {s.current ? " (this device)" : ""} · {relativeTime(s.last_seen_at)}
             {s.ip_address ? ` · ${s.ip_address}` : ""}
             {!s.current && (

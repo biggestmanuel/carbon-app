@@ -21,22 +21,32 @@ import type { SessionRow } from "../types";
 
 const laptop: SessionRow = {
   id: "aaaa",
-  label: "Firefox",
-  user_agent: "Mozilla/5.0 Firefox/120.0",
+  label: "Firefox on Linux",
+  browser: "Firefox",
+  os: "Linux",
+  user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
   ip_address: "203.0.113.7",
   created_at: "2026-03-01T09:00:00+00:00",
   last_seen_at: "2026-03-01T10:00:00+00:00",
   current: false,
+  new_location: false,
+  new_device: false,
+  unrecognised: false,
 };
 
 const phone: SessionRow = {
   id: "bbbb",
-  label: "Safari",
-  user_agent: "Mozilla/5.0 Mobile Safari/604.1",
+  label: "Safari on iPhone",
+  browser: "Safari",
+  os: "iPhone",
+  user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Version/17.0 Mobile/15E148 Safari/604.1",
   ip_address: "203.0.113.8",
   created_at: "2026-03-01T09:30:00+00:00",
   last_seen_at: "2026-03-01T10:30:00+00:00",
   current: true,
+  new_location: false,
+  new_device: false,
+  unrecognised: false,
 };
 
 function serve(rows: SessionRow[]) {
@@ -52,9 +62,54 @@ describe("Sessions", () => {
   it("lists each device with its label and address", async () => {
     render(<Sessions refreshKey={0} />);
 
-    expect(await screen.findByText("Firefox")).toBeTruthy();
-    expect(screen.getByText("Safari")).toBeTruthy();
+    expect(await screen.findByText("Firefox on Linux")).toBeTruthy();
+    expect(screen.getByText("Safari on iPhone")).toBeTruthy();
     expect(screen.getByText(/203\.0\.113\.8/)).toBeTruthy();
+  });
+
+  it("says what the list is for", async () => {
+    render(<Sessions refreshKey={0} />);
+
+    expect(screen.getByText(/revoke anything you do not recognise/i)).toBeTruthy();
+  });
+
+  it("does not flag a session the account has seen before", async () => {
+    render(<Sessions refreshKey={0} />);
+
+    await screen.findByText("Firefox on Linux");
+    expect(screen.queryByText(/new device|new location/)).toBeNull();
+  });
+
+  it("flags a session from an unfamiliar address", async () => {
+    serve([
+      { ...phone, id: "cccc", new_location: true, unrecognised: true },
+      laptop,
+    ]);
+    render(<Sessions refreshKey={0} />);
+
+    expect(await screen.findByText("new location")).toBeTruthy();
+  });
+
+  it("distinguishes a new device from a new location", async () => {
+    serve([
+      { ...phone, id: "dddd", new_device: true, unrecognised: true },
+      laptop,
+    ]);
+    render(<Sessions refreshKey={0} />);
+
+    expect(await screen.findByText("new device")).toBeTruthy();
+  });
+
+  it("says so when both are unfamiliar", async () => {
+    serve([
+      {
+        ...phone, id: "eeee", new_location: true, new_device: true, unrecognised: true,
+      },
+      laptop,
+    ]);
+    render(<Sessions refreshKey={0} />);
+
+    expect(await screen.findByText("new device and location")).toBeTruthy();
   });
 
   it("marks the device it is running on and offers no revoke for it", async () => {
@@ -62,7 +117,7 @@ describe("Sessions", () => {
     // without meaning to; sign out is the deliberate way to do that.
     render(<Sessions refreshKey={0} />);
 
-    await screen.findByText("Safari");
+    await screen.findByText("Safari on iPhone");
     expect(screen.getByText(/this device/i)).toBeTruthy();
     expect(screen.getAllByRole("button", { name: /^revoke$/i })).toHaveLength(1);
   });
@@ -76,15 +131,15 @@ describe("Sessions", () => {
 
     await waitFor(() => expect(apiMock.delete).toHaveBeenCalledWith("/account/sessions/aaaa"));
     // The revoked row disappears; this device is still listed.
-    await waitFor(() => expect(screen.queryByText("Firefox")).toBeNull());
-    expect(screen.getByText("Safari")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText("Firefox on Linux")).toBeNull());
+    expect(screen.getByText("Safari on iPhone")).toBeTruthy();
   });
 
   it("offers sign-out-everywhere only when there is more than one session", async () => {
     serve([phone]);
     render(<Sessions refreshKey={0} />);
 
-    await screen.findByText("Safari");
+    await screen.findByText("Safari on iPhone");
     expect(screen.queryByRole("button", { name: /sign out everywhere/i })).toBeNull();
   });
 
@@ -116,7 +171,7 @@ describe("Sessions", () => {
     await user.click(await screen.findByRole("button", { name: /^revoke$/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/no such session/i);
-    expect(screen.getByText("Firefox")).toBeTruthy();
+    expect(screen.getByText("Firefox on Linux")).toBeTruthy();
   });
 
   it("survives a partial payload rather than throwing", async () => {

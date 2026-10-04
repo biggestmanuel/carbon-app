@@ -114,12 +114,21 @@ export interface LoginResponse {
 
 export interface SessionRow {
   id: string;
+  /** "Chrome on Windows" — browser and platform together. */
   label: string;
+  browser: string;
+  os: string | null;
   user_agent: string | null;
   ip_address: string | null;
   created_at: string | null;
   last_seen_at: string | null;
   current: boolean;
+  /** This address was not in use by this account before this session. */
+  new_location: boolean;
+  /** This browser was not used by this account before this session. */
+  new_device: boolean;
+  /** Either of the above: the one flag worth showing in the UI. */
+  unrecognised: boolean;
 }
 
 export interface SessionsResponse {

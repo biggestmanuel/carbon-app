@@ -116,7 +116,25 @@ def list_sessions():
     sessions = UserSession.query.filter_by(user_id=user.id).order_by(
         UserSession.last_seen_at.desc()
     ).all()
-    return jsonify({"sessions": [s.to_dict(current_id) for s in sessions]})
+
+    # Flag anything this account had not used from before, walking oldest to
+    # newest and comparing each session only against the ones that predate it.
+    # Accumulating first and comparing afterwards would put a session's own
+    # values into its comparison set, so nothing could ever look unfamiliar.
+    by_age = sorted(sessions, key=lambda s: (s.created_at, s.id))
+    seen_ips: set[str] = set()
+    seen_agents: set[str] = set()
+    rows = {}
+    for session in by_age:
+        rows[session.id] = session.to_dict(
+            current_id, earlier_ips=seen_ips, earlier_agents=seen_agents
+        )
+        if session.ip_address:
+            seen_ips.add(session.ip_address)
+        if session.user_agent:
+            seen_agents.add(session.user_agent)
+
+    return jsonify({"sessions": [rows[s.id] for s in sessions]})
 
 
 @account_bp.route("/sessions/<session_id>", methods=["DELETE"])

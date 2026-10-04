@@ -138,6 +138,25 @@ button.danger {
 
 button.danger:hover:not(:disabled) { background: rgba(248, 113, 113, 0.12); }
 
+/* An unfamiliar session is the one thing on this screen a user must not skim
+   past, so it is called out rather than left to be noticed. */
+.session-unrecognised {
+  background: rgba(248, 113, 113, 0.1);
+  border-left: 3px solid var(--danger);
+  padding-left: 0.6rem;
+}
+
+.badge {
+  background: var(--danger);
+  border-radius: 0.2rem;
+  color: #1f2937;
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.4rem;
+  text-transform: uppercase;
+}
+
 /* Separates the export half of the settings card from the deletion half. */
 hr {
   border: none;

@@ -245,31 +245,74 @@ class UserSession(db.Model):
 
     user = db.relationship("User", back_populates="sessions")
 
-    def to_dict(self, current_id=None):
+    def to_dict(self, current_id=None, earlier_ips=None, earlier_agents=None):
+        """Serialise for the session list.
+
+        `earlier_ips` and `earlier_agents` are the addresses and user agents this
+        account had used *before this session was created*. Comparing against
+        earlier sessions only is what makes the flags mean something: a set that
+        already includes a session's own values can never report it as unfamiliar.
+
+        An empty comparison set means "this is the account's first session", and
+        nothing is claimed. A single-device user must not be told their only
+        device is somewhere new.
+
+        They stay False when the caller supplies nothing, so the other callers of
+        to_dict() do not cry wolf.
+        """
+        ip = self.ip_address
+        agent = self.user_agent
+
+        new_location = bool(
+            ip and earlier_ips and ip not in earlier_ips
+        )
+        new_device = bool(
+            agent and earlier_agents and agent not in earlier_agents
+        )
+
         return {
             "id": self.id,
-            "label": describe_device(self.user_agent),
-            "user_agent": self.user_agent,
-            "ip_address": self.ip_address,
+            "label": describe_session(agent),
+            "browser": describe_device(agent),
+            "os": describe_os(agent),
+            "user_agent": agent,
+            "ip_address": ip,
             "created_at": _iso_utc(self.created_at),
             "last_seen_at": _iso_utc(self.last_seen_at),
             "current": self.id == current_id,
+            # An unfamiliar address is the single most useful signal here: it is
+            # what a stolen password looks like from the inside.
+            "new_location": new_location,
+            "new_device": new_device,
+            # Worth surfacing only when something is actually unfamiliar.
+            "unrecognised": new_location or new_device,
         }
 
     def __repr__(self):
         return f"<UserSession {self.id} user={self.user_id}>"
 
 
-# Order matters: the most specific token first.
+# Ordered most specific first: Edge and Opera both claim to be Chrome, and
+# Chrome claims to be Safari.
 _DEVICE_PATTERNS = (
     ("Edge", r"Edg/"),
     ("Opera", r"OPR/"),
     ("Firefox", r"Firefox/"),
     ("Chrome", r"Chrome/"),
-    ("Safari", r"Safari/"),
+    ("Safari", r"Version/.*Safari/"),
     ("curl", r"curl/"),
     ("Postman", r"PostmanRuntime/"),
     ("Python", r"python-requests|Python/"),
+)
+
+_OS_PATTERNS = (
+    ("iPhone", r"iPhone"),
+    ("iPad", r"iPad"),
+    ("Android", r"Android"),
+    ("Windows", r"Windows"),
+    ("macOS", r"Mac OS X|Macintosh"),
+    ("Chrome OS", r"CrOS"),
+    ("Linux", r"Linux|X11"),
 )
 
 
@@ -281,6 +324,30 @@ def describe_device(user_agent):
         if re.search(pattern, user_agent):
             return name
     return "Unknown device"
+
+
+def describe_os(user_agent):
+    """The platform, so two Chromes can be told apart. Never raises."""
+    if not user_agent:
+        return None
+    for name, pattern in _OS_PATTERNS:
+        if re.search(pattern, user_agent):
+            return name
+    return None
+
+
+def describe_session(user_agent):
+    """'Chrome on Windows', or just the browser when the OS is unrecognised.
+
+    The device list is the screen a user consults when they suspect someone else
+    is in their account, so 'Chrome' alone cannot distinguish their own laptop
+    from one they have never seen.
+    """
+    device = describe_device(user_agent)
+    operating_system = describe_os(user_agent)
+    if operating_system and device != "Unknown device":
+        return f"{device} on {operating_system}"
+    return device
 
 
 class Footprint(db.Model):
