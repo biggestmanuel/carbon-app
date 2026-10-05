@@ -43,6 +43,10 @@ class Config:
     # goes through `flask db upgrade` instead. See AUTO_CREATE_TABLES below.
     MIGRATIONS_DIR = os.environ.get("MIGRATIONS_DIR", "migrations")
     AUTO_CREATE_TABLES = _bool_env("AUTO_CREATE_TABLES", False)
+    # Compare the applied migration against the head at startup and refuse to
+    # serve if they differ. Without it, an operator who forgets `flask db upgrade`
+    # gets a running app whose every request 500s on a missing column.
+    CHECK_SCHEMA_ON_STARTUP = _bool_env("CHECK_SCHEMA_ON_STARTUP", True)
 
     # --- Sessions ----------------------------------------------------------
     # The access token lives in an httpOnly cookie, so page scripts cannot read

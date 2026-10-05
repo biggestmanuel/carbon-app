@@ -30,6 +30,10 @@ class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = TEST_DATABASE_URL
     AUTO_CREATE_TABLES = False
+    # The suite builds its schema with create_all() rather than by running the
+    # migration chain, so there is no alembic_version row to compare against head.
+    # Checked explicitly in test_startup_schema.py, which runs the real thing.
+    CHECK_SCHEMA_ON_STARTUP = False
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=5)
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=1)
     JWT_COOKIE_SECURE = False

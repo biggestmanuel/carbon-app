@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -47,6 +48,7 @@ def create_app(config_object=Config):
         )
 
     _register_error_handlers(app)
+    _check_schema_is_current(app)
 
     from routes.account import account_bp
     from routes.auth import auth_bp
@@ -65,6 +67,85 @@ def create_app(config_object=Config):
             db.create_all()
 
     return app
+
+
+def _is_running_a_migration_command():
+    """True when this process is the `flask db ...` CLI.
+
+    The schema check below would otherwise be a chicken-and-egg problem: the
+    command that *fixes* a stale database would be the one command refused
+    because the database is stale.
+    """
+    return (
+        "FLASK_RUN_FROM_CLI" in os.environ
+        and len(sys.argv) > 1
+        and sys.argv[1] == "db"
+    )
+
+
+def _check_schema_is_current(app):
+    """Refuse to serve against a database the migrations have not reached.
+
+    Found the hard way. AUTO_CREATE_TABLES is deliberately off, so an operator who
+    pulls and forgets `flask db upgrade` gets a running app whose every request
+    500s on `no such column: user.totp_secret` -- an error that names a column
+    rather than the missing step, and appears only after deploying a migration.
+
+    One cheap query at startup, compared against the migration head, turns a
+    runtime failure across every endpoint into a refusal to boot with an
+    instruction the operator can act on.
+    """
+    if not app.config.get("CHECK_SCHEMA_ON_STARTUP", True):
+        return
+    if _is_running_a_migration_command():
+        return
+
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import inspect, text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    try:
+        # Both the engine and Flask-Migrate's config need an application context,
+        # which does not exist yet at this point in create_app().
+        with app.app_context():
+            head = ScriptDirectory.from_config(migrate.get_config()).get_current_head()
+            # Asking whether the table exists, rather than catching the error from
+            # selecting it, keeps "uninitialised" and "unreachable" apart. They
+            # look alike in an exception and mean opposite things: the first is
+            # fixed by `flask db upgrade`, the second by fixing the connection.
+            if not inspect(db.engine).has_table("alembic_version"):
+                applied = None
+            else:
+                with db.engine.connect() as connection:
+                    applied = connection.execute(
+                        text("SELECT version_num FROM alembic_version")
+                    ).scalar()
+    except SQLAlchemyError:
+        # Cannot read the version because the database is unreachable or
+        # misconfigured. That is a different failure with its own loud symptoms,
+        # and refusing to boot here would replace a clear connection error with a
+        # confusing one about the schema. The real error is on its way anyway.
+        app.logger.exception(
+            "Could not read the migration state; skipping the schema check. "
+            "The database is probably unreachable."
+        )
+        return
+    except Exception:
+        # Our own problem with the migration directory rather than the database.
+        app.logger.exception("Could not read the migration state")
+        return
+
+    if applied == head:
+        return
+
+    raise RuntimeError(
+        "The database schema is out of date.\n"
+        f"  applied: {applied or '(none)'}\n"
+        f"  expected: {head or '(none)'}\n"
+        "AUTO_CREATE_TABLES is off by design, so the schema only moves via Alembic. Run:\n"
+        "    flask db upgrade\n"
+        "and restart. Until then every request fails with a missing-column error."
+    )
 
 
 def _register_error_handlers(app):

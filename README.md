@@ -108,6 +108,7 @@ ones that matter:
 | `PASSWORD_RESET_TTL_MINUTES` | `30`                 | Reset token lifetime                      |
 | `EMAIL_VERIFICATION_TTL_MINUTES` | `1440`            | Confirmation token lifetime               |
 | `RESET_REQUIRES_VERIFIED_EMAIL` | `true`           | Refuse resets to unconfirmed addresses    |
+| `CHECK_SCHEMA_ON_STARTUP`  | `true`                 | Refuse to serve a stale schema            |
 | `PROXY_FIX_X_FOR`          | `0`                    | Number of trusted proxies; 0 = none      |
 | `SESSION_TOUCH_INTERVAL_SECONDS` | `300`             | `last_seen_at` write frequency           |
 | `BREACH_CHECK_ENABLED`     | `true`                 | Refuse known-compromised passwords        |
@@ -124,6 +125,16 @@ placeholders, when the cookie is not Secure, when `CORS_ORIGINS` is `*`, when
 `RATELIMIT_STORAGE_URI` is `memory://` with more than one worker, or when
 `TOTP_ENCRYPTION_KEY` is set but malformed. It reports every problem at once rather
 than the first.
+
+On startup it also compares the applied migration against the head and refuses to
+serve if they differ, naming both revisions and telling you to run `flask db
+upgrade`. This is the commonest deployment mistake in a project where
+`AUTO_CREATE_TABLES` is deliberately off: pulling and forgetting the migration
+otherwise produces a running app whose every request 500s on
+`no such column: user.totp_secret` — an error naming a column rather than the
+missing step. `flask db ...` is exempt from the check, so the command that fixes a
+stale database is never the one that refuses to run. Set
+`CHECK_SCHEMA_ON_STARTUP=false` to restore the old behaviour.
 
 Frontend config is `VITE_API_URL` in `frontend/.env` (see `.env.example`).
 
