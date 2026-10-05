@@ -228,6 +228,17 @@ worker is still allowed, because there the limiter genuinely works.
 docker compose up -d    # Postgres and Redis, for local development
 ```
 
+Two traps in that URL, both measured on this project rather than guessed:
+
+- **Use `127.0.0.1`, not `localhost`.** On most machines `localhost` resolves to
+  `::1` first, Docker publishes only the IPv4 port, and the client waits out the
+  connect timeout before falling back — a 21 second penalty on the first request
+  of every connection. The same applies to `redis://` and `postgresql://` URLs.
+- **gunicorn cannot run on Windows.** It imports `fcntl`, which is POSIX-only, so
+  `ModuleNotFoundError: No module named 'fcntl'` is the expected result on
+  Windows. That is a property of the server, not of this app; `wsgi.py` itself
+  imports cleanly anywhere.
+
 ## API
 
 All `/footprint/*` routes except `/footprint/factors` require a session cookie.
@@ -376,7 +387,7 @@ factor snapshot, so mixed-region histories are reported correctly.
 
 ```bash
 cd backend
-python -m pytest tests -q        # 507 tests
+python -m pytest tests -q        # 526 tests
 ruff check .                    # lint
 
 cd frontend

@@ -18,7 +18,13 @@ limiter = Limiter(
     # Limits are declared per route with @limiter.limit(...). No global default,
     # so a newly added endpoint does not silently inherit a ceiling.
     default_limits=[],
-    storage_uri="memory://",
+    # storage_uri is deliberately NOT passed here. A value given to the
+    # constructor wins over RATELIMIT_STORAGE_URI in the app config, so passing
+    # "memory://" made that setting a no-op: the app would accept a Redis URL,
+    # Config.validate() would see it, and the limiter would still count per
+    # process. That is the exact failure this configuration exists to prevent,
+    # hidden behind the configuration that was supposed to fix it.
+    # Flask-Limiter reads RATELIMIT_STORAGE_URI from the config in init_app().
 )
 
 

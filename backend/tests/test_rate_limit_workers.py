@@ -10,6 +10,7 @@ with more than one worker. Single-worker deployments are allowed, because there
 the limiter genuinely does work as intended.
 """
 
+
 import pytest
 
 from config import Config
@@ -121,22 +122,53 @@ class TestRedisIsRequiredForSeveralWorkers:
 
 
 class TestWsgiWorkerCount:
-    def test_wsgi_defaults_to_one_worker(self, monkeypatch):
+    """wsgi.py reads its settings at import time.
 
-        monkeypatch.delenv("WEB_CONCURRENCY", raising=False)
-        import wsgi
+    Run in a subprocess: reloading the module in-process fights with sys.modules
+    and leaks an imported app into every later test. A subprocess is also the
+    honest way to check that module-level environment reads work, since that is
+    the whole behaviour being asserted.
+    """
 
-        assert wsgi.workers >= 1
+    @staticmethod
+    def _settings(**env):
+        import os
+        import subprocess
+        import sys as _sys
 
-    def test_wsgi_honours_the_environment(self, monkeypatch):
+        child_env = dict(os.environ)
+        # wsgi.py calls create_app() at import, which runs the stale-schema guard.
+        # There is no migration history here, so the guard would refuse -- which
+        # is it working correctly, and irrelevant to worker counts.
+        child_env["CHECK_SCHEMA_ON_STARTUP"] = "false"
+        child_env.update({k: str(v) for k, v in env.items()})
+        if "WEB_CONCURRENCY" not in env:
+            child_env.pop("WEB_CONCURRENCY", None)
 
-        monkeypatch.setenv("WEB_CONCURRENCY", "6")
-        import importlib
+        result = subprocess.run(
+            [
+                _sys.executable, "-c",
+                "import json, wsgi; "
+                "print(json.dumps({'workers': wsgi.workers, 'bind': wsgi.bind}))",
+            ],
+            capture_output=True, text=True, env=child_env,
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        )
+        assert result.returncode == 0, result.stderr
+        import json as _json
 
-        import wsgi
+        return _json.loads(result.stdout.strip().splitlines()[-1])
 
-        importlib.reload(wsgi)
-        assert wsgi.workers == 6
-        # Leave the module as it was for other tests.
-        monkeypatch.delenv("WEB_CONCURRENCY", raising=False)
-        importlib.reload(wsgi)
+    def test_wsgi_defaults_to_one_worker(self):
+        assert self._settings()["workers"] >= 1
+
+    def test_wsgi_honours_the_environment(self):
+        assert self._settings(WEB_CONCURRENCY=6)["workers"] == 6
+
+    def test_wsgi_binds_to_loopback_by_default(self):
+        # A proxy should be the only thing reaching the socket.
+        assert self._settings()["bind"] == "127.0.0.1:8000"
+
+    def test_wsgi_bind_can_be_overridden(self):
+        # Inside a private container there may be no other network boundary.
+        assert self._settings(BIND="0.0.0.0:8000")["bind"] == "0.0.0.0:8000"

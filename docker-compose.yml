@@ -8,6 +8,18 @@
 # store counts per process, so a 10/minute login limit becomes 40 with four
 # workers and no error is raised anywhere. Config.validate() refuses to start in
 # production when WEB_CONCURRENCY is above 1 with memory:// selected.
+#
+# Point RATELIMIT_STORAGE_URI at 127.0.0.1, NOT localhost. On most machines
+# localhost resolves to ::1 first, Docker publishes only the IPv4 port, and the
+# client then waits out the connect timeout before falling back -- measured here
+# as a 21 second penalty on the first request. Same trap as `vite preview`.
+#
+#   RATELIMIT_STORAGE_URI=redis://127.0.0.1:6379/0
+#
+# Host ports come from the environment with development-friendly defaults,
+# because both 5432 and 6379 are commonly already taken by something else on a
+# developer machine -- and a hard port clash stops the whole stack from starting
+# for a reason that has nothing to do with this project.
 services:
   postgres:
     image: postgres:16-alpine
@@ -16,7 +28,7 @@ services:
       POSTGRES_PASSWORD: carbon
       POSTGRES_DB: carbon
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -34,7 +46,7 @@ services:
     # deploy, which is the opposite of what a limiter is for.
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
