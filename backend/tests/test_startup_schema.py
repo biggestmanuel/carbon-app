@@ -141,6 +141,55 @@ class TestStartupRefusesAStaleDatabase:
         # And now the app boots, which is the point of the exemption.
         assert _create_app(env).returncode == 0
 
+    def test_it_is_not_blocked_by_a_global_option_before_the_subcommand(self, migrated_db):
+        # The regression. Flask takes global options before the subcommand, so
+        # `--app app db upgrade` and `-e development db upgrade` are the same
+        # command as `db upgrade`. An earlier version matched a fixed argument
+        # position and so exempted only the shortest form, which meant the guard
+        # refused the fix and then told the operator to run `flask db upgrade` --
+        # advice that failed too, against the same stale database.
+        # Only options that take a value. `-e` is --env-file, so it wants a path
+        # to an env file rather than an environment name.
+        for prefix in ([], ["--app", "app"], ["--app", "app.py"]):
+            env, _db_path = migrated_db
+            _downgrade_one(env)
+
+            result = subprocess.run(
+                [sys.executable, "-m", "flask", *prefix, "db", "upgrade"],
+                cwd=BACKEND_DIR, env=env, capture_output=True, text=True,
+            )
+
+            assert result.returncode == 0, (
+                f"`flask {' '.join(prefix)} db upgrade` was blocked:\n{result.stderr}"
+            )
+            # Fixing it must actually leave a database the app will accept.
+            assert _create_app(env).returncode == 0
+
+    def test_the_exemption_does_not_leak_to_other_servers(self):
+        # wsgi:app and the dev server must still be checked. Only the flask CLI
+        # sets FLASK_RUN_FROM_CLI, which is what keeps this narrow.
+        import app as app_module
+
+        for argv in (["gunicorn", "wsgi:app"], ["python", "app.py"], ["pytest"]):
+            saved = sys.argv
+            sys.argv = argv
+            try:
+                assert app_module._is_running_a_migration_command() is False, argv
+            finally:
+                sys.argv = saved
+
+    def test_it_does_not_exempt_a_non_flask_process_that_mentions_db(self):
+        import app as app_module
+
+        saved = os.environ.pop("FLASK_RUN_FROM_CLI", None)
+        try:
+            sys.argv = ["python", "tools/db_dump.py"]
+            assert app_module._is_running_a_migration_command() is False
+        finally:
+            if saved is not None:
+                os.environ["FLASK_RUN_FROM_CLI"] = saved
+            sys.argv = ["pytest"]
+
     def test_fixing_it_actually_fixes_it(self, migrated_db):
         env, _db_path = migrated_db
         _downgrade_one(env)

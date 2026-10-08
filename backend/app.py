@@ -75,12 +75,21 @@ def _is_running_a_migration_command():
     The schema check below would otherwise be a chicken-and-egg problem: the
     command that *fixes* a stale database would be the one command refused
     because the database is stale.
+
+    Searches the whole argument list rather than indexing a fixed position. Flask
+    takes global options before the subcommand, so `flask --app app db upgrade`
+    and `flask -e development db upgrade` are the same command as
+    `flask db upgrade` -- and an earlier version of this checked argv[1], which
+    matched only the last of those. Against a stale database that made
+    `flask --app app db upgrade` fail with "the schema is out of date, run
+    `flask db upgrade`", i.e. it refused the fix and then recommended it.
+
+    `FLASK_RUN_FROM_CLI` is what keeps this narrow: it is set only by the flask
+    CLI, so `wsgi:app`, `app.py` and a gunicorn command line are unaffected. The
+    residual risk is a non-migration flask command with a literal "db" argument,
+    which would skip the check rather than wrongly refuse to boot.
     """
-    return (
-        "FLASK_RUN_FROM_CLI" in os.environ
-        and len(sys.argv) > 1
-        and sys.argv[1] == "db"
-    )
+    return "FLASK_RUN_FROM_CLI" in os.environ and "db" in sys.argv[1:]
 
 
 def _check_schema_is_current(app):
