@@ -41,8 +41,12 @@ def migrated_db(tmp_path):
     return env, db_path
 
 
-def _create_app(env):
+def _create_app(env, check_schema=True):
     """Start the app against `env`, returning the process result."""
+    if not check_schema:
+        # For the branch test: the throwaway database has no migration history, so
+        # the stale-schema guard would fire first and mask the branch message.
+        env = {**env, "CHECK_SCHEMA_ON_STARTUP": "false"}
     return subprocess.run(
         [sys.executable, "-c", "import app"],
         cwd=BACKEND_DIR, env=env, capture_output=True, text=True,
@@ -54,6 +58,159 @@ def _downgrade_one(env):
         [sys.executable, "-m", "flask", "db", "downgrade", "--", "-1"],
         cwd=BACKEND_DIR, env=env, capture_output=True, text=True, check=True,
     )
+
+
+def test_a_single_head_is_not_a_branch(app):
+    """The normal case must not trip the guard.
+
+    Read from real metadata rather than a stand-in. An earlier version mocked
+    ScriptDirectory, and the mock raised inside the guard's own broad `except`,
+    which logged and returned -- so the test appeared to pass while proving
+    nothing at all.
+    """
+    from alembic.script import ScriptDirectory
+
+    from app import _check_single_migration_head
+    from extensions import migrate
+
+    with app.app_context():
+        heads = ScriptDirectory.from_config(migrate.get_config()).get_heads()
+    assert len(heads) == 1, "this repository's history should be linear"
+
+    _check_single_migration_head(app)
+
+
+def _branched_history_in(env, target):
+    """Copy the migrations aside and add a second head. Returns env pointing at it.
+
+    The new revision hangs off the current head's *parent*, not off the head
+    itself. A revision pointing at the head would just extend the chain and leave
+    a single head, which is not the case under test.
+    """
+    import shutil
+    import textwrap
+
+    from alembic.script import ScriptDirectory
+
+    target = target / "branchy_migrations"
+    shutil.copytree(os.path.join(BACKEND_DIR, "migrations"), target)
+
+    with _app_context():
+        script = ScriptDirectory.from_config(_migrate_config())
+        # Revision objects, newest first. Walking the ids instead yields the
+        # human-readable "id -> id, message" form Alembic also uses for display,
+        # which is not a revision id at all and produces a script directory that
+        # cannot be read.
+        revisions = list(script.walk_revisions())
+        assert len(revisions) >= 2, "the head needs a parent to branch from"
+        parent_id = revisions[1].revision
+
+    (target / "versions" / "aaaa1111bbbb2222cccc3333_branch.py").write_text(
+        textwrap.dedent(f'''
+        """branch probe
+
+        Revision ID: aaaa1111bbbb
+        Revises: {parent_id}
+        """
+
+        from alembic import op
+        import sqlalchemy as sa
+
+        revision = "aaaa1111bbbb"
+        down_revision = "{parent_id}"
+        branch_labels = None
+        depends_on = None
+
+
+        def upgrade():
+            op.create_table("branch_probe", sa.Column("id", sa.Integer()))
+
+
+        def downgrade():
+            op.drop_table("branch_probe")
+        ''').strip(),
+        encoding="utf-8",
+    )
+
+    return {**env, "MIGRATIONS_DIR": str(target)}
+
+
+def test_a_genuinely_branched_repository_is_detected(tmp_path):
+    """Two heads are refused, with merge advice rather than upgrade advice.
+
+    Builds a second revision hanging off the current head's parent in a copy of
+    the migrations directory, so this goes through Alembic's real metadata reader
+    rather than a stand-in.
+
+    get_current_head() returns None for multiple heads, which the stale-schema
+    guard would report as "expected: (none)" -- true, but useless, and it points
+    at `flask db upgrade`, which cannot resolve a branch.
+    """
+    env = dict(os.environ)
+    env["FLASK_ENV"] = "development"
+    env["DATABASE_URL"] = f"sqlite:///{tmp_path / 'branchy.db'}"
+    env["AUTO_CREATE_TABLES"] = "false"
+    # The throwaway database has no migration history, so the stale-schema guard
+    # would fire first and mask the branch message.
+    env["CHECK_SCHEMA_ON_STARTUP"] = "false"
+    env.setdefault("SECRET_KEY", "a" * 48)
+    env.setdefault("JWT_SECRET_KEY", "b" * 48)
+
+    result = _create_app(_branched_history_in(env, tmp_path / "m"))
+
+    assert result.returncode != 0
+    assert "branched" in result.stderr
+    # Both heads named, so an operator can see which revision collided.
+    assert "aaaa1111bbbb" in result.stderr
+    # The remedy is a merge. It must not tell them to run `flask db upgrade`,
+    # which is the command that cannot resolve a branch.
+    assert "Create a merge revision" in result.stderr
+
+
+def _app_context():
+    """A throwaway app context for reading migration metadata.
+
+    Alembic's config and SQLAlchemy's engine both need one, and a real app is the
+    simplest way to get it. The schema check is off, since the test database has
+    no migration history.
+    """
+    from app import create_app
+    from tests.conftest import TestConfig
+
+    return create_app(TestConfig).app_context()
+
+
+def _migrate_config():
+    from extensions import migrate
+
+    return migrate.get_config()
+
+
+def test_a_branched_history_is_not_reported_as_a_stale_database(tmp_path):
+    """Both guards, and which one speaks first.
+
+    Order matters: the schema check compares against get_current_head(), which is
+    None for a branch, so running it first would report "expected: (none)" and
+    send the operator to `flask db upgrade` -- a command that cannot resolve a
+    branch. The branch check must be asked first.
+    """
+    env = dict(os.environ)
+    env["FLASK_APP"] = "app.py"
+    env["FLASK_ENV"] = "development"
+    env["DATABASE_URL"] = f"sqlite:///{tmp_path / 'ordered.db'}"
+    env["AUTO_CREATE_TABLES"] = "false"
+    env.setdefault("SECRET_KEY", "a" * 48)
+    env.setdefault("JWT_SECRET_KEY", "b" * 48)
+    branched_env = _branched_history_in(env, tmp_path / "m")
+
+    # Schema check on, so that both guards are genuinely in play and their order
+    # is what decides the message the operator sees.
+    result = _create_app(branched_env)
+
+    assert result.returncode != 0
+    # The branch message, not the stale-schema one.
+    assert "branched" in result.stderr
+    assert "out of date" not in result.stderr
 
 
 class TestStartupRefusesAStaleDatabase:
@@ -100,6 +257,11 @@ class TestStartupRefusesAStaleDatabase:
         assert result.returncode != 0
         assert "flask db upgrade" in result.stderr
 
+    def test_a_single_head_still_boots(self, migrated_db):
+        # The guard must not fire on a healthy linear history.
+        env, _db_path = migrated_db
+        assert _create_app(env).returncode == 0
+
     def test_a_database_ahead_of_the_code_also_refuses(self, migrated_db):
         # Stamping head while the code is older is just as broken as the reverse,
         # and silently serving would be worse.
@@ -143,13 +305,11 @@ class TestStartupRefusesAStaleDatabase:
 
     def test_it_is_not_blocked_by_a_global_option_before_the_subcommand(self, migrated_db):
         # The regression. Flask takes global options before the subcommand, so
-        # `--app app db upgrade` and `-e development db upgrade` are the same
-        # command as `db upgrade`. An earlier version matched a fixed argument
-        # position and so exempted only the shortest form, which meant the guard
-        # refused the fix and then told the operator to run `flask db upgrade` --
-        # advice that failed too, against the same stale database.
-        # Only options that take a value. `-e` is --env-file, so it wants a path
-        # to an env file rather than an environment name.
+        # `flask --app app db upgrade` is the same command as `flask db upgrade`.
+        # An earlier version matched a fixed argument position and so exempted
+        # only the shortest form, which meant the guard refused the fix and then
+        # told the operator to run `flask db upgrade` -- advice that failed too,
+        # against the same stale database.
         for prefix in ([], ["--app", "app"], ["--app", "app.py"]):
             env, _db_path = migrated_db
             _downgrade_one(env)

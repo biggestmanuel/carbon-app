@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 
+from alembic.script import ScriptDirectory
 from dotenv import load_dotenv
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -48,6 +49,10 @@ def create_app(config_object=Config):
         )
 
     _register_error_handlers(app)
+    # Heads first: a branched history makes the applied/expected comparison below
+    # meaningless, and reporting that as a stale database sends the operator to
+    # run a command that cannot work.
+    _check_single_migration_head(app)
     _check_schema_is_current(app)
 
     from routes.account import account_bp
@@ -109,7 +114,6 @@ def _check_schema_is_current(app):
     if _is_running_a_migration_command():
         return
 
-    from alembic.script import ScriptDirectory
     from sqlalchemy import inspect, text
     from sqlalchemy.exc import SQLAlchemyError
 
@@ -154,6 +158,38 @@ def _check_schema_is_current(app):
         "AUTO_CREATE_TABLES is off by design, so the schema only moves via Alembic. Run:\n"
         "    flask db upgrade\n"
         "and restart. Until then every request fails with a missing-column error."
+    )
+
+
+def _check_single_migration_head(app):
+    """Refuse to start when the migration history has branched.
+
+    get_current_head() returns None when there are several heads, so the schema
+    check above would report that as "expected: (none)" -- a confusing way of
+    saying the repository itself is inconsistent. Two migrations generated from
+    one parent and never merged means no single upgrade path exists, and
+    `flask db upgrade` cannot pick one.
+
+    The remedy is a merge revision rather than an upgrade, so the message says so.
+    """
+    try:
+        with app.app_context():
+            heads = ScriptDirectory.from_config(migrate.get_config()).get_heads()
+    except Exception:
+        # Our own problem with the migrations directory rather than the database.
+        app.logger.exception("Could not read the migration heads")
+        return
+
+    if len(heads) <= 1:
+        return
+
+    raise RuntimeError(
+        "The migration history has branched into "
+        f"{len(heads)} heads: {', '.join(sorted(heads))}.\n"
+        "No single upgrade path exists, so `flask db upgrade` cannot choose one.\n"
+        "Create a merge revision:\n"
+        "    flask db merge -m 'merge heads'\n"
+        "then `flask db upgrade`."
     )
 
 
