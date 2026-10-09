@@ -223,8 +223,204 @@ class TestCompletingTheLogin:
         assert client.get("/footprint/summary").status_code == 401
         assert client.get("/account/sessions").status_code == 401
 
+
+def _confirmed_alice_with_2fa(client):
+    """Register alice with a confirmed address, then arm 2FA. Returns the secret.
+
+    The shared auth_headers fixture creates alice with no email, and a password
+    reset requires a confirmed address -- so these tests build the account
+    themselves rather than skipping for want of a mail transport.
+    """
+    client.post("/auth/register", json={
+        "username": "alice", "password": "correct-horse",
+        "email": "alice@example.com",
+    })
+    client.post("/auth/login", json={"username": "alice", "password": "correct-horse"})
+    token = client.post("/account/verify-email/request").json["dev_token"]
+    assert token, "a registered address should produce a confirmation token"
+    client.post("/account/verify-email/confirm", json={"token": token})
+
+    # Enrol while still signed in. Logging out first would leave no session, and
+    # /auth/mfa/start is deliberately session-gated.
+    secret = client.get("/auth/mfa/start").json["secret"]
+    res = client.post("/auth/mfa/confirm", json={
+        "secret": secret, "code": current_code(secret),
+    })
+    assert res.status_code == 200
+    client.post("/auth/logout")
+    return secret
+
+
+def _reset_alices_password(client):
+    """Bump alice's token_version through the real password-reset flow.
+
+    Walks a genuine reset rather than incrementing the column directly, so these
+    tests prove the version bump happens on the path a real user would take.
+    """
+    reset = client.post("/auth/forgot-password", json={"email": "alice@example.com"})
+    assert reset.status_code == 202
+    reset_token = reset.json.get("dev_token")
+    assert reset_token, "a confirmed address should receive a reset token"
+    res = client.post("/auth/reset-password", json={
+        "token": reset_token, "password": "a-fresh-password",
+    })
+    assert res.status_code == 200
+
+
+class TestThePendingTokenHonoursTheCredentialVersion:
+    """A password reset must cancel a login that is already half-finished.
+
+    The pending token embeds the token_version it was minted under. This was
+    written from the first commit and never checked, so the token advertised a
+    guarantee the code did not keep.
+    """
+
+    def test_a_reset_invalidates_a_pending_login(self, client, login, finish_mfa_login):
+        secret = _confirmed_alice_with_2fa(client)
+
+        pending = login().json["pending_token"]
+        _reset_alices_password(client)
+
+        # Same pending token, same correct code: must be refused.
+        res = finish_mfa_login(pending, current_code(secret))
+        assert res.status_code == 401
+        assert client.get("/auth/me").status_code == 401
+
+    def test_a_fresh_pending_token_still_works_after_a_reset(
+        self, client, login, finish_mfa_login
+    ):
+        # The guard must invalidate only the stale token, not the login flow.
+        secret = _confirmed_alice_with_2fa(client)
+
+        _reset_alices_password(client)
+        # The reset changed the password, so log in with the new one.
+        fresh = login(password="a-fresh-password").json["pending_token"]
+        assert finish_mfa_login(fresh, current_code(secret)).status_code == 200
+
+    def test_the_claim_is_actually_present(self, client, auth_headers, enroll_mfa, login):
+        # Guards against the claim being dropped again: without it there is
+        # nothing for the check above to compare. Needs 2FA on, since that is what
+        # makes login return a pending token at all.
+        auth_headers()
+        enroll_mfa()
+        client.post("/auth/logout")
+
+        pending = login().json["pending_token"]
+        from flask_jwt_extended import decode_token
+
+        claims = decode_token(pending)
+        assert claims.get("ver") is not None
+        assert claims.get("mfa_pending") is True
+
+    def test_the_version_is_compared_against_the_user(
+        self, client, auth_headers, enroll_mfa, app
+    ):
+        # A token whose version is wrong for an unrelated reason is also refused,
+        # so the comparison cannot be satisfied by a missing claim. Minted with a
+        # valid signature, so only the version check can reject it.
+        from flask_jwt_extended import create_access_token
+
+        auth_headers()
+        secret, _codes = enroll_mfa()
+        client.post("/auth/logout")
+
+        with app.app_context():
+            from models import User
+
+            user = User.query.filter_by(username="alice").one()
+            bad = create_access_token(
+                identity=str(user.id),
+                additional_claims={"mfa_pending": True, "ver": 999999},
+            )
+
+        assert client.post("/auth/mfa/check", json={
+            "pending_token": bad, "code": current_code(secret),
+        }).status_code == 401
+
+
+class TestAnUnreadableSeedIsNotSilent:
+    """A rotated encryption key breaks every enrolled user.
+
+    decrypt() returns None rather than raising, which is right for refusing a
+    login -- but it means a key rotation produces a clean 401 with no indication
+    of the cause, and recovery codes become the only way back in. The operator has
+    no way to tell that from an ordinary wrong code, so the login path logs it.
+    """
+
+    def _corrupt_the_seed(self, app):
+        with app.app_context():
+            from extensions import db
+            from models import User
+
+            user = User.query.filter_by(username="alice").one()
+            # Same shape, wrong key: Fernet's tag makes it fail to decrypt.
+            user.totp_secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+            db.session.commit()
+            return user
+
+    def test_a_failed_decrypt_is_logged_with_the_cause(
+        self, client, auth_headers, enroll_mfa, login, finish_mfa_login, app, caplog
+    ):
+        auth_headers()
+        secret, _codes = enroll_mfa()
+        client.post("/auth/logout")
+        self._corrupt_the_seed(app)
+
+        with caplog.at_level("ERROR"):
+            finish_mfa_login(login().json["pending_token"], current_code(secret))
+
+        assert any("TOTP_ENCRYPTION_KEY" in r.message for r in caplog.records), (
+            "the operator needs to be told the key is the likely cause"
+        )
+
+    def test_the_client_cannot_tell_an_unreadable_seed_from_a_wrong_code(
+        self, client, auth_headers, enroll_mfa, login, finish_mfa_login, app
+    ):
+        # The log is for the operator, not the caller. Both cases must look
+        # identical from outside, or this becomes an oracle for whether an account
+        # exists and is enrolled.
+        auth_headers()
+        secret, _codes = enroll_mfa()
+        client.post("/auth/logout")
+
+        pending = login().json["pending_token"]
+        wrong_code = finish_mfa_login(pending, "000000")
+        self._corrupt_the_seed(app)
+        unreadable = finish_mfa_login(pending, current_code(secret))
+
+        assert unreadable.status_code == wrong_code.status_code
+        assert unreadable.json == wrong_code.json
+
+    def test_a_healthy_seed_does_not_log(
+        self, client, auth_headers, enroll_mfa, login, finish_mfa_login, caplog
+    ):
+        auth_headers()
+        secret, _codes = enroll_mfa()
+        client.post("/auth/logout")
+
+        with caplog.at_level("ERROR"):
+            res = finish_mfa_login(login().json["pending_token"], current_code(secret))
+
+        assert res.status_code == 200
+        assert not any("TOTP_ENCRYPTION_KEY" in r.message for r in caplog.records)
+
+    def test_a_user_without_2fa_does_not_log(self, client, auth_headers, login, caplog):
+        # requires_totp() is False, so there is no seed that could have failed to
+        # decrypt. The guard on the log is user.requires_totp(), and without this
+        # the error would fire on every ordinary login for every account.
+        auth_headers()
+
+        with caplog.at_level("ERROR"):
+            res = login()
+
+        assert res.status_code == 200
+        assert "pending_token" not in res.json
+        assert not any("TOTP_ENCRYPTION_KEY" in r.message for r in caplog.records)
+
+
+class TestThePendingTokenLifetime:
     def test_an_expired_pending_token_is_refused(self, client, auth_headers, enroll_mfa,
-                                                 login, finish_mfa_login, monkeypatch):
+                                                     login, finish_mfa_login, monkeypatch):
         auth_headers()
         secret, _codes = enroll_mfa()
         client.post("/auth/logout")
@@ -254,6 +450,8 @@ class TestCompletingTheLogin:
         with app.test_request_context():
             assert mfa_routes._pending_lifetime() == datetime.timedelta(minutes=5)
 
+
+class TestEnrolmentDoesNotDisturbTheSession:
     def test_enrolling_does_not_log_the_current_session_out(self, client, auth_headers,
                                                             enroll_mfa):
         # The user is already signed in where they are enrolling. Revoking here
@@ -386,29 +584,40 @@ class TestRecoveryCodes:
         assert body["totp_enabled"] is True
         assert body["recovery_codes_remaining"] == 10
 
-    def test_password_reset_invalidates_them(self, client, auth_headers, enroll_mfa):
+    def test_password_reset_invalidates_them(self, client):
         # A reset the user did not initiate must not leave a working bypass on an
         # account the attacker does not control: recovery codes are the other way
         # past the second factor, so they go with the sessions.
-        auth_headers()
-        _secret, _codes = enroll_mfa()
+        #
+        # Resets alice's own password rather than a second account's. Resetting
+        # some other user's password must NOT touch alice's codes, and this test
+        # previously registered a second account and then asserted alice's codes
+        # were gone -- which was asserting the opposite of correct behaviour, and
+        # never ran because it skipped for want of a confirmed address.
+        _confirmed_alice_with_2fa(client)
 
-        registered = client.post("/auth/register", json={
+        assert RecoveryCode.query.count() == 10
+        _reset_alices_password(client)
+        assert RecoveryCode.query.count() == 0
+
+    def test_another_users_reset_leaves_my_codes_alone(self, client):
+        _confirmed_alice_with_2fa(client)
+        client.post("/auth/register", json={
             "username": "bob", "password": "another-password",
             "email": "bob@example.com",
         })
-        assert registered.status_code == 201
+        client.post("/auth/login", json={"username": "bob", "password": "another-password"})
+        bob_token = client.post("/account/verify-email/request").json["dev_token"]
+        client.post("/account/verify-email/confirm", json={"token": bob_token})
+        client.post("/auth/logout")
 
-        raw = client.post("/auth/forgot-password", json={"email": "bob@example.com"})
-        token = raw.json.get("dev_token")
-        if not token:
-            pytest.skip("no mail transport in this configuration")
-
-        assert RecoveryCode.query.count() == 10
+        reset = client.post("/auth/forgot-password", json={"email": "bob@example.com"})
         assert client.post("/auth/reset-password", json={
-            "token": token, "password": "a-new-password",
+            "token": reset.json["dev_token"], "password": "bobs-new-password",
         }).status_code == 200
-        assert RecoveryCode.query.count() == 0
+
+        # Bob's reset must not have cost alice her escape hatch.
+        assert RecoveryCode.query.count() == 10
 
 
 class TestTheTwoPathsLookTheSame:
@@ -472,6 +681,41 @@ class TestDisabling:
         })
         assert res.status_code == 403
         assert User.query.filter_by(username="alice").one().totp_enabled is True
+
+    def test_a_wrong_password_does_not_burn_the_code(self, client, auth_headers,
+                                                    enroll_mfa):
+        # A typo in the password must not cost the user their authenticator code.
+        # Verifying the code first spends it -- the counter moves forward and the
+        # recovery code is marked used -- so a second attempt with the password
+        # corrected would fail even though the user did everything right.
+        auth_headers()
+        secret, _codes = enroll_mfa()
+        code = current_code(secret)
+
+        assert client.post("/auth/mfa/disable", json={
+            "code": code, "password": "wrong",
+        }).status_code == 403
+
+        # Same code, password now correct: must still work.
+        assert client.post("/auth/mfa/disable", json={
+            "code": code, "password": "correct-horse",
+        }).status_code == 200
+
+    def test_a_wrong_password_does_not_burn_the_recovery_code(
+        self, client, auth_headers, enroll_mfa
+    ):
+        # The same wart on the recovery path, and worse there: a lost phone
+        # means these codes are the only way back in.
+        auth_headers()
+        _secret, codes = enroll_mfa()
+
+        assert client.post("/auth/mfa/disable", json={
+            "code": codes[0], "password": "wrong",
+        }).status_code == 403
+
+        assert client.post("/auth/mfa/disable", json={
+            "code": codes[0], "password": "correct-horse",
+        }).status_code == 200
 
     def test_a_recovery_code_also_disables(self, client, auth_headers, enroll_mfa):
         # The path for someone who has lost their phone.

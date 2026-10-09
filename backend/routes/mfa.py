@@ -69,6 +69,20 @@ def verify_second_factor(user, code):
     matching HMAC, so it would return faster than any TOTP failure.
     """
     secret = user.totp_secret_plaintext()
+    if user.requires_totp() and not secret:
+        # 2FA is on but the seed will not decrypt. The overwhelmingly likely cause
+        # is a rotated or wrong TOTP_ENCRYPTION_KEY, which is otherwise invisible:
+        # every login for this account returns a bare 401 and the user has no way
+        # in but their recovery codes, with nothing to tell them why. The operator
+        # gets a log line; the caller still reports the same single outcome, so
+        # this leaks nothing to whoever is making the request.
+        current_app.logger.error(
+            "Cannot decrypt the TOTP seed for user id=%s. If TOTP_ENCRYPTION_KEY "
+            "has been rotated, every enrolled user is locked out and only their "
+            "recovery codes will work. Restore the previous key, or reset 2FA for "
+            "the affected accounts.",
+            user.id,
+        )
     counter = counter_for_code(secret, code) if secret else None
     totp_ok = counter is not None
 
@@ -106,6 +120,19 @@ def check_code():
 
     user = db.session.get(User, int(claims["sub"]))
     if user is None or not user.requires_totp():
+        return jsonify({"msg": INVALID_CODE_MSG}), 401
+
+    # The pending token embeds the credential version it was minted under. Checking
+    # it here is what makes a password reset cancel a login already in progress:
+    # apply_new_password bumps the version, so a token from before the reset no
+    # longer matches and the second half of that login cannot complete.
+    #
+    # This claim was written from the start and never read, which is worse than not
+    # writing it -- the token claimed a guarantee the code did not keep. Exploitability
+    # on its own is low, since a valid code is still required, but an attacker who
+    # already holds one should not get a free five-minute window after the owner
+    # changes the password.
+    if claims.get(current_app.config["JWT_SESSION_VERSION_CLAIM"]) != (user.token_version or 1):
         return jsonify({"msg": INVALID_CODE_MSG}), 401
 
     outcome = verify_second_factor(user, code)
@@ -277,16 +304,26 @@ def disable():
     if not code:
         return jsonify({"msg": INVALID_CODE_MSG}), 401
 
-    # A current code proves the caller has the authenticator right now. The
-    # password proves they are not relying on a stolen session alone.
-    if verify_second_factor(user, code) is None:
-        return jsonify({"msg": INVALID_CODE_MSG}), 401
-
+    # Password first, deliberately. Verifying the code spends it -- the TOTP
+    # counter moves forward and a recovery code is marked used -- so checking the
+    # code before the password meant a typo in the password cost the user a
+    # perfectly good code, on the one screen where they are already locked out.
+    # On the recovery path that is worse still, because a lost phone makes those
+    # codes the only way back in.
+    #
+    # Order is not a security question here. Both checks are required, the caller
+    # is already authenticated as this user, and the 403/401 split is unchanged,
+    # so nothing is disclosed that the caller could not already establish.
     if (
         current_app.config["TOTP_DISABLE_REQUIRES_PASSWORD"]
         and (not isinstance(password, str) or not user.check_password(password))
     ):
         return jsonify({"msg": "Password is incorrect"}), 403
+
+    # A current code proves the caller has the authenticator right now. The
+    # password, checked above, proves they are not relying on a stolen session.
+    if verify_second_factor(user, code) is None:
+        return jsonify({"msg": INVALID_CODE_MSG}), 401
 
     user.disable_totp()
     db.session.commit()
