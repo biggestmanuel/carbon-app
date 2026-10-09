@@ -560,9 +560,20 @@ and `struct` and verified against the RFC 6238 test vectors.
   A malformed key is rejected at startup. An *absent* key is allowed: 2FA is
   opt-in, and the enrolment endpoint answers `503` with an actionable message
   rather than the app refusing to boot for a feature nobody asked for.
+
+  **Do not rotate this key.** It encrypts seeds that were encrypted with the old
+  one, and Fernet will not decrypt them afterwards: every enrolled account is
+  locked out with no way to recover the seed, and their recovery codes become the
+  only way in. There is no re-encryption path, by design — the alternative is a
+  routine that has to read plaintext seeds, which is the thing encryption here
+  exists to prevent. A failed decryption is logged at `ERROR` naming the user id
+  and the likely cause, but from the outside it is an ordinary `401`, identical to
+  a wrong code. If a key is lost, reset 2FA for the affected accounts.
 - Codes cannot be replayed — the spent time step is recorded and only advances.
   Recovery codes are hashed, single-use, and invalidated by a password reset.
 - Disabling requires a current code *and* the password, and revokes every session.
+  The password is checked first, so a typo in it does not spend a valid code or
+  burn a recovery code.
 - A wrong TOTP code, a wrong recovery code, a malformed one and a missing one all
   return the same status and body, and both lookups always run, so the response
   does not reveal which path was guessed.
@@ -585,3 +596,8 @@ Each of these was a documented limitation and now is not.
 | Sessions not readable at a glance | platform labels and familiarity flags |
 | Layout asserted from CSS source, not rendering | Playwright, which found a real overflow bug |
 | No 2FA | optional TOTP with recovery codes |
+| Pending 2FA token carried a credential version it never checked | `check_code()` compares it, so a password reset cancels a login in progress |
+| A branched migration history reported as a stale database | `_check_single_migration_head()` refuses to start and names `flask db merge` |
+| Rotating `TOTP_ENCRYPTION_KEY` locked out every user with no trace | `ERROR` log naming the cause; documented as do-not-rotate |
+| Disabling 2FA spent a valid code before checking the password | password checked first, so a typo does not cost a code |
+| A test asserted a *second* user's password reset deleted the first's recovery codes, and skipped so never ran | resets the right account; added the inverse test |
