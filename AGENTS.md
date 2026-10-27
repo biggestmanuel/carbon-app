@@ -2,21 +2,32 @@
 
 Working notes for coding agents on this repository.
 
-## After every file change, commit and push
+## Standing rules (from workspace AGENTS.md)
 
-Commit and push after every change. No batching, no "I'll do it at the end".
+Never commit or push to `main`. `main` receives merges only. Work on a branch
+from an up-to-date `main`: `git switch -c <short-descriptive-name>`, then
+`git push -u origin <branch>`. Commit and push to your branch after every
+coherent change. One change, one commit, pushed, then move on.
 
-Each commit needs:
+When you believe a branch is ready, say so with reasoning, CI status, and a
+summary of the diff. Open the PR and wait. Merge only after the user explicitly
+confirms. Before asking, confirm CI is green and the diff matches your report.
 
-- A one-line summary in the imperative (`fix(mfa):`, `test(footprint):`, `docs:`).
-- A body explaining **why**, not what. The diff already says what changed. The body
-  should carry the reasoning that is not visible in the diff: the failure mode,
-  what it looked like, or the constraint that forced the shape of the fix.
-- Any security-relevant detail spelled out plainly. If a change touches
-  authentication, sessions, passwords, rate limiting or tokens, the commit body is
-  where the threat model goes.
+Reverting is a commit. History is append-only. If a pushed commit was wrong,
+add a commit that undoes it and say what was wrong.
 
-Push to `main`. The tree is expected to be clean at the end of every change.
+**Note:** `AGENTS.md` itself is never committed or pushed — see `.gitignore`.
+This `carbon-app/AGENTS.md` is currently tracked (it was committed before this
+rule existed). Untracking it requires explicit approval because `.gitignore`
+has no effect on files already in git.
+
+## Automate everything that can be automated
+
+Tests, lint, builds, audits, scans, migration checks, and repeated manual steps
+should be automated, run, and results reported. Never automate irreversible or
+outward-facing actions without confirmation — merging, deploying, deleting data,
+force-pushing, spending money, sending messages. Those require explicit approval
+before they run.
 
 ## Before committing, review for leaked secrets
 
@@ -68,17 +79,24 @@ python -m pytest tests -q
 python -m ruff check .
 
 # frontend, from frontend/
-npm run lint
-npx tsc --noEmit
-npm test
+npm.cmd run lint        # PowerShell blocks npm.ps1; use .cmd
+npx.cmd tsc --noEmit
+npm.cmd test
 ```
 
 The backend suite is also run against Postgres, not only SQLite. Some behaviour
 differs between the two and SQLite alone will not catch it.
 
+## Public routes
+
+Routes that are intentionally public (no accounts by design) must be documented
+as such in `README.md` and protected with rate limits, input limits, and
+spending caps instead of auth. Never add auth to them without asking.
+
 ## Things that have bitten us
 
-- **PowerShell.** No `&&`. Use `pushd`/`popd` or set `workdir`.
+- **PowerShell.** No `&&`. Use `pushd`/`popd` or set `workdir`. `npm.ps1` is
+  blocked — use `npm.cmd` / `npx.cmd`.
 - **`localhost` vs `127.0.0.1`.** `localhost` resolves to `::1` first, and hangs
   for ~21s against Docker-published IPv4 ports. Always use `127.0.0.1`. The same
   applies in config: `RATELIMIT_STORAGE_URI` should point at `127.0.0.1`.
@@ -104,7 +122,7 @@ differs between the two and SQLite alone will not catch it.
 ## Undocumented behaviour worth knowing
 
 - `flask db upgrade` needs `FLASK_APP=app.py`. The startup guards exempt the
-  Flask CLI, otherwise fixing a stale schema would be impossible.
+  Flask CLI, otherwise fixing a stale schema is impossible.
 - `discard_totp_counter` / `consume_totp_counter` exist because a TOTP step can
   legitimately straddle two 30-second windows. Without them, a code entered near
   a boundary would be rejected right after being accepted.

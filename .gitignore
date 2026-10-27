@@ -40,3 +40,4 @@ frontend/.cache/ms-playwright/
 .idea/
 .DS_Store
 Thumbs.db
+AGENTS.md
